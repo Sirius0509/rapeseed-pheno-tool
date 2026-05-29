@@ -2,15 +2,15 @@
   "name": "油菜表型拍照测量工具",
   "short_name": "油菜测量",
   "description": "标尺校准、两点长度、三点角度、分枝计数和 Excel 导出。",
-  "start_url": "/",
-  "scope": "/",
+  "start_url": "./",
+  "scope": "./",
   "display": "standalone",
   "orientation": "any",
   "background_color": "#f7f8f5",
   "theme_color": "#2f7d32",
   "icons": [
     {
-      "src": "/favicon.svg",
+      "src": "./favicon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any maskable"

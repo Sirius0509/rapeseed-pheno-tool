@@ -1,5 +1,6 @@
 const CACHE_NAME = 'rapeseed-pheno-tool-v1'
-const APP_SHELL = ['/', '/manifest.webmanifest', '/favicon.svg']
+const BASE_URL = new URL('./', self.registration.scope)
+const APP_SHELL = [BASE_URL.href, new URL('manifest.webmanifest', BASE_URL).href, new URL('favicon.svg', BASE_URL).href]
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)))
@@ -26,6 +27,6 @@ self.addEventListener('fetch', (event) => {
         caches.open(CACHE_NAME).then((cache) => cache.put(request, copy))
         return response
       })
-      .catch(() => caches.match(request).then((cached) => cached || caches.match('/'))),
+      .catch(() => caches.match(request).then((cached) => cached || caches.match(BASE_URL.href))),
   )
 })
