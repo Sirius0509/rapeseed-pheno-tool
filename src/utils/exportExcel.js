@@ -54,7 +54,55 @@ export function exportSamples(samples) {
   URL.revokeObjectURL(link.href)
 }
 
-function createWorkbookFiles(rows) {
+export function exportSiliqueRecords(records) {
+  const siliqueHeaders = [
+    '材料编号',
+    '样品编号',
+    '重复',
+    '角果编号',
+    '角果长度_mm',
+    '籽粒数',
+    '粒数每cm',
+    '识别方式',
+    '照片名称',
+    '云端链接',
+    '备注',
+    '测量日期',
+  ]
+  const rows = [
+    siliqueHeaders,
+    ...records.map((record) => [
+      record.genotype,
+      record.sampleId,
+      record.replicate,
+      record.siliqueId,
+      record.siliqueLengthMm,
+      record.seedCount,
+      record.seedsPerCm,
+      record.method,
+      record.imageName,
+      record.cloudUrl,
+      record.notes,
+      record.measuredAt,
+    ]),
+  ]
+  downloadWorkbook(rows, `rapeseed-silique-${new Date().toISOString().slice(0, 10)}.xlsx`, '角果籽粒数据')
+}
+
+function downloadWorkbook(rows, filename, sheetName = '油菜表型数据') {
+  const files = createWorkbookFiles(rows, sheetName)
+  const zipped = zipSync(files)
+  const blob = new Blob([zipped], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  })
+  const link = document.createElement('a')
+  link.href = URL.createObjectURL(blob)
+  link.download = filename
+  link.click()
+  URL.revokeObjectURL(link.href)
+}
+
+function createWorkbookFiles(rows, sheetName = '油菜表型数据') {
   return {
     '[Content_Types].xml': xmlFile(`<?xml version="1.0" encoding="UTF-8"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -71,7 +119,7 @@ function createWorkbookFiles(rows) {
     'xl/workbook.xml': xmlFile(`<?xml version="1.0" encoding="UTF-8"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <sheets>
-    <sheet name="油菜表型数据" sheetId="1" r:id="rId1"/>
+    <sheet name="${escapeXml(sheetName)}" sheetId="1" r:id="rId1"/>
   </sheets>
 </workbook>`),
     'xl/_rels/workbook.xml.rels': xmlFile(`<?xml version="1.0" encoding="UTF-8"?>
