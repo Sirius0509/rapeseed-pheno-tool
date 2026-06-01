@@ -41,6 +41,8 @@ const minSeedArea = ref(18)
 const maxSeedArea = ref(1400)
 const minRoundness = ref(0.25)
 const foregroundMode = ref('light')
+const detectStatus = ref('先框选籽粒区域，再生成候选点。')
+const detecting = ref(false)
 const state = reactive({
   mmPerPixel: null,
   scale: null,
@@ -191,26 +193,55 @@ function removeNearestSeed(point) {
   if (bestIndex >= 0 && bestDistance < 35) state.seedPoints.splice(bestIndex, 1)
 }
 
-function autoDetectSeeds() {
+async function autoDetectSeeds() {
   if (!canvas.value || !image.value) return
-  const work = document.createElement('canvas')
-  work.width = canvas.value.width
-  work.height = canvas.value.height
-  const ctx = work.getContext('2d')
-  ctx.drawImage(image.value, 0, 0, work.width, work.height)
-  const img = ctx.getImageData(0, 0, work.width, work.height)
-  const points = connectedComponents({
-    imageData: img,
-    cutoff: threshold.value,
-    minArea: minSeedArea.value,
-    maxArea: maxSeedArea.value,
-    minRoundness: minRoundness.value,
-    roi: state.seedRoi,
-    mode: foregroundMode.value,
-  })
-  state.detectedSeeds = points
-  state.seedPoints = points
-  draw()
+  detecting.value = true
+  detectStatus.value = '正在生成候选点...'
+  await nextTick()
+
+  try {
+    const maxAnalyzeWidth = 900
+    const scale = Math.min(1, maxAnalyzeWidth / canvas.value.width)
+    const work = document.createElement('canvas')
+    work.width = Math.max(1, Math.round(canvas.value.width * scale))
+    work.height = Math.max(1, Math.round(canvas.value.height * scale))
+    const ctx = work.getContext('2d', { willReadFrequently: true })
+    ctx.drawImage(image.value, 0, 0, work.width, work.height)
+    const img = ctx.getImageData(0, 0, work.width, work.height)
+    const scaledRoi = state.seedRoi
+      ? {
+          x: state.seedRoi.x * scale,
+          y: state.seedRoi.y * scale,
+          width: state.seedRoi.width * scale,
+          height: state.seedRoi.height * scale,
+        }
+      : null
+    const areaScale = scale * scale
+    const points = connectedComponents({
+      imageData: img,
+      cutoff: threshold.value,
+      minArea: Math.max(1, minSeedArea.value * areaScale),
+      maxArea: Math.max(2, maxSeedArea.value * areaScale),
+      minRoundness: minRoundness.value,
+      roi: scaledRoi,
+      mode: foregroundMode.value,
+    }).map((point) => ({
+      ...point,
+      x: point.x / scale,
+      y: point.y / scale,
+      area: point.area / areaScale,
+    }))
+    state.detectedSeeds = points
+    state.seedPoints = points
+    detectStatus.value = points.length
+      ? `已生成 ${points.length} 个候选点，请人工增删确认。`
+      : '没有生成候选点。请调整阈值/面积，或先框选更准确的籽粒区域。'
+    draw()
+  } catch (error) {
+    detectStatus.value = '候选点生成失败。请换一张更小或更清晰的照片后重试。'
+  } finally {
+    detecting.value = false
+  }
 }
 
 function connectedComponents({ imageData, cutoff, minArea, maxArea, minRoundness, roi, mode }) {
@@ -230,7 +261,11 @@ function connectedComponents({ imageData, cutoff, minArea, maxArea, minRoundness
   for (let y = bounds.minY; y <= bounds.maxY; y += 1) {
     for (let x = bounds.minX; x <= bounds.maxX; x += 1) {
       const idx = y * width + x
-      if (seen[idx] || !isForeground(data, idx, cutoff, mode)) continue
+      if (seen[idx]) continue
+      if (!isForeground(data, idx, cutoff, mode)) {
+        seen[idx] = 1
+        continue
+      }
       let area = 0
       let sumX = 0
       let sumY = 0
@@ -251,7 +286,16 @@ function connectedComponents({ imageData, cutoff, minArea, maxArea, minRoundness
         maxX = Math.max(maxX, cx)
         minY = Math.min(minY, cy)
         maxY = Math.max(maxY, cy)
-        const neighbors = [current - 1, current + 1, current - width, current + width]
+        const neighbors = [
+          current - 1,
+          current + 1,
+          current - width,
+          current + width,
+          current - width - 1,
+          current - width + 1,
+          current + width - 1,
+          current + width + 1,
+        ]
         for (const next of neighbors) {
           if (next < 0 || next >= seen.length || seen[next]) continue
           const nx = next % width
@@ -298,6 +342,7 @@ function resetMeasurements() {
 function clearSeeds() {
   state.seedPoints = []
   state.detectedSeeds = []
+  detectStatus.value = '已清空籽粒点。'
   draw()
 }
 
@@ -466,9 +511,9 @@ window.addEventListener('resize', () => {
           <MinusCircle :size="17" />
           删籽粒
         </button>
-        <button type="button" :disabled="!image" @click="autoDetectSeeds">
+        <button type="button" :disabled="!image || detecting" @click="autoDetectSeeds">
           <Play :size="17" />
-          生成候选点
+          {{ detecting ? '分析中' : '生成候选点' }}
         </button>
         <button type="button" @click="clearSeeds">
           <Trash2 :size="17" />
@@ -528,6 +573,7 @@ window.addEventListener('resize', () => {
         <label class="range-field">最小面积 {{ minSeedArea }}<input v-model.number="minSeedArea" type="range" min="2" max="300" /></label>
         <label class="range-field">最大面积 {{ maxSeedArea }}<input v-model.number="maxSeedArea" type="range" min="100" max="5000" /></label>
         <label class="range-field">圆整度 {{ minRoundness }}<input v-model.number="minRoundness" type="range" min="0.05" max="0.9" step="0.05" /></label>
+        <p class="hint status">{{ detectStatus }}</p>
         <p class="hint">先点“框选籽粒区”框住籽粒，再生成候选点。候选点不是最终结果，需要用“补籽粒/删籽粒”人工确认。</p>
       </section>
     </aside>

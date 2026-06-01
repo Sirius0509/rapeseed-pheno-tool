@@ -415,6 +415,15 @@ canvas {
   line-height: 1.5;
 }
 
+.hint.status {
+  color: #0f567d;
+  background: #e8f5fb;
+  border: 1px solid #b8ddeb;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+
 .table-wrap {
   overflow-x: auto;
 }
