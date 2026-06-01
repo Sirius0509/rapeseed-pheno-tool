@@ -71,3 +71,25 @@ npm run preview
 - 籽粒计数：建议单独使用目标检测或实例分割模型，例如 YOLO 检测模型、Cellpose/StarDist 风格模型。它不建议和整株关键点模型共用。
 
 一个统一系统可以管理所有数据，但模型本身建议按任务拆分。
+
+## 籽粒识别服务
+
+`backend/` 目录提供一个可选 Python FastAPI 服务，用 OpenCV 的局部阈值、形态学和轮廓过滤生成籽粒候选点。
+
+本地运行：
+
+```bash
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app:app --host 0.0.0.0 --port 8000
+```
+
+前端“角果/籽粒”模块中可填写识别服务地址：
+
+```text
+http://127.0.0.1:8000
+```
+
+正式线上使用时，后端需要部署为 HTTPS，例如 Render、Railway、Fly.io、阿里云、腾讯云或实验室服务器反向代理。

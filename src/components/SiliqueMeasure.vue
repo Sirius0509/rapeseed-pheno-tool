@@ -42,6 +42,7 @@ const minSeedArea = ref(18)
 const maxSeedArea = ref(1400)
 const minRoundness = ref(0.25)
 const foregroundMode = ref('light')
+const serviceUrl = ref(localStorage.getItem('rapeseed-pheno-tool:seed-service-url') || '')
 const detectStatus = ref('先框选籽粒区域，再生成候选点。')
 const detecting = ref(false)
 const state = reactive({
@@ -201,6 +202,46 @@ async function autoDetectSeeds() {
   await nextTick()
 
   try {
+    if (serviceUrl.value.trim()) {
+      await detectSeedsWithService()
+    } else {
+      detectSeedsInBrowser()
+    }
+  } catch (error) {
+    detectStatus.value = '候选点生成失败。请检查识别服务地址，或清空服务地址后用浏览器候选算法。'
+  } finally {
+    detecting.value = false
+  }
+}
+
+async function detectSeedsWithService() {
+  localStorage.setItem('rapeseed-pheno-tool:seed-service-url', serviceUrl.value.trim())
+  const endpoint = `${serviceUrl.value.trim().replace(/\/$/, '')}/api/seed-candidates`
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      imageDataUrl: canvas.value.toDataURL('image/jpeg', 0.9),
+      roi: state.seedRoi,
+      foregroundMode: foregroundMode.value,
+      minArea: minSeedArea.value,
+      maxArea: maxSeedArea.value,
+      minRoundness: minRoundness.value,
+      minCircularity: 0.12,
+    }),
+  })
+  if (!response.ok) throw new Error(`Seed service failed: ${response.status}`)
+  const result = await response.json()
+  const points = Array.isArray(result.points) ? result.points : []
+  state.detectedSeeds = points
+  state.seedPoints = points
+  detectStatus.value = points.length
+    ? `后端识别生成 ${points.length} 个候选点，请人工增删确认。`
+    : '后端识别没有生成候选点。请检查框选区域、拍照质量或参数。'
+  draw()
+}
+
+function detectSeedsInBrowser() {
     const maxAnalyzeWidth = 900
     const scale = Math.min(1, maxAnalyzeWidth / canvas.value.width)
     const work = document.createElement('canvas')
@@ -238,11 +279,6 @@ async function autoDetectSeeds() {
       ? `已生成 ${points.length} 个候选点，请人工增删确认。`
       : '没有生成候选点。请调整阈值/面积，或先框选更准确的籽粒区域。'
     draw()
-  } catch (error) {
-    detectStatus.value = '候选点生成失败。请换一张更小或更清晰的照片后重试。'
-  } finally {
-    detecting.value = false
-  }
 }
 
 function connectedComponents({ imageData, cutoff, minArea, maxArea, minRoundness, roi, mode }) {
@@ -563,6 +599,10 @@ window.addEventListener('resize', () => {
 
       <section class="panel">
         <div class="panel-title">自动识别参数</div>
+        <label class="range-field">
+          识别服务地址
+          <input v-model="serviceUrl" placeholder="例如 https://your-seed-api.example.com；留空用浏览器算法" />
+        </label>
         <label class="range-field">
           籽粒颜色
           <select v-model="foregroundMode">
