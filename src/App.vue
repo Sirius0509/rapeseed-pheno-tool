@@ -6,6 +6,7 @@ import ResultTable from './components/ResultTable.vue'
 import SampleForm from './components/SampleForm.vue'
 import SiliqueMeasure from './components/SiliqueMeasure.vue'
 import { exportSamples } from './utils/exportExcel'
+import { exportPlantTrainingData } from './utils/exportTrainingData'
 import { loadSamples, saveSamples } from './utils/storage'
 
 const form = reactive({
@@ -77,6 +78,10 @@ function clearSamples() {
         <button v-if="activeModule === 'plant'" type="button" :disabled="!samples.length" @click="exportSamples(samples)">
           <Download :size="18" />
           导出 Excel
+        </button>
+        <button v-if="activeModule === 'plant'" type="button" :disabled="!samples.length" @click="exportPlantTrainingData(samples)">
+          <Download :size="18" />
+          导出训练数据
         </button>
       </div>
     </header>

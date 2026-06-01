@@ -16,6 +16,7 @@ import {
 } from '@lucide/vue'
 import { distance, round } from '../utils/geometry'
 import { exportSiliqueRecords } from '../utils/exportExcel'
+import { exportSiliqueTrainingData } from '../utils/exportTrainingData'
 import { loadSiliqueRecords, saveSiliqueRecords } from '../utils/storage'
 
 const canvas = ref(null)
@@ -587,6 +588,7 @@ window.addEventListener('resize', () => {
       </div>
       <div class="button-row">
         <button type="button" :disabled="!records.length" @click="exportSiliqueRecords(records)">导出 Excel</button>
+        <button type="button" :disabled="!records.length" @click="exportSiliqueTrainingData(records)">导出训练数据</button>
         <button class="ghost" type="button" :disabled="!records.length" @click="clearRecords">清空</button>
       </div>
     </div>
