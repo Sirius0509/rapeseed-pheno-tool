@@ -257,6 +257,14 @@ video {
   cursor: pointer;
 }
 
+.hidden-input {
+  position: fixed;
+  left: -9999px;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
 .scale-field {
   width: 130px;
 }

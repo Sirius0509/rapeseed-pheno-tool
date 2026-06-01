@@ -62,6 +62,10 @@ const metrics = computed(() => {
   }
 })
 
+function chooseFile() {
+  fileInput.value?.click()
+}
+
 async function startCamera() {
   if (!navigator.mediaDevices?.getUserMedia) return
   stream.value = await navigator.mediaDevices.getUserMedia({
@@ -369,11 +373,11 @@ window.addEventListener('resize', () => {
           <Square :size="18" />
           关闭相机
         </button>
-        <label class="upload-button">
+        <button type="button" @click="chooseFile">
           <ImagePlus :size="18" />
           上传照片
-          <input ref="fileInput" type="file" accept="image/*" capture="environment" @change="loadFile" />
-        </label>
+        </button>
+        <input ref="fileInput" class="hidden-input" type="file" accept="image/*" capture="environment" @change="loadFile" />
         <label class="scale-field">
           标尺长度 mm
           <input v-model.number="scaleLengthMm" type="number" min="1" />
