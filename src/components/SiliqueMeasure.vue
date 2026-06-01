@@ -39,10 +39,13 @@ const scaleLengthMm = ref(10)
 const threshold = ref(65)
 const minSeedArea = ref(18)
 const maxSeedArea = ref(1400)
+const minRoundness = ref(0.25)
+const foregroundMode = ref('light')
 const state = reactive({
   mmPerPixel: null,
   scale: null,
   siliqueLine: null,
+  seedRoi: null,
   seedPoints: [],
   detectedSeeds: [],
   previewMask: false,
@@ -157,9 +160,21 @@ function handleCanvasClick(event) {
         pixels: distance(pendingPoints.value[0], pendingPoints.value[1]),
       }
     }
+    if (mode.value === 'seedRoi') {
+      state.seedRoi = normalizeRect(pendingPoints.value[0], pendingPoints.value[1])
+    }
     pendingPoints.value = []
   }
   draw()
+}
+
+function normalizeRect(a, b) {
+  return {
+    x: Math.min(a.x, b.x),
+    y: Math.min(a.y, b.y),
+    width: Math.abs(a.x - b.x),
+    height: Math.abs(a.y - b.y),
+  }
 }
 
 function removeNearestSeed(point) {
@@ -184,24 +199,45 @@ function autoDetectSeeds() {
   const ctx = work.getContext('2d')
   ctx.drawImage(image.value, 0, 0, work.width, work.height)
   const img = ctx.getImageData(0, 0, work.width, work.height)
-  const points = connectedComponents(img, threshold.value, minSeedArea.value, maxSeedArea.value)
+  const points = connectedComponents({
+    imageData: img,
+    cutoff: threshold.value,
+    minArea: minSeedArea.value,
+    maxArea: maxSeedArea.value,
+    minRoundness: minRoundness.value,
+    roi: state.seedRoi,
+    mode: foregroundMode.value,
+  })
   state.detectedSeeds = points
   state.seedPoints = points
   draw()
 }
 
-function connectedComponents(imageData, cutoff, minArea, maxArea) {
+function connectedComponents({ imageData, cutoff, minArea, maxArea, minRoundness, roi, mode }) {
   const { data, width, height } = imageData
   const seen = new Uint8Array(width * height)
   const result = []
   const stack = []
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
+  const bounds = roi
+    ? {
+        minX: Math.max(0, Math.floor(roi.x)),
+        minY: Math.max(0, Math.floor(roi.y)),
+        maxX: Math.min(width - 1, Math.ceil(roi.x + roi.width)),
+        maxY: Math.min(height - 1, Math.ceil(roi.y + roi.height)),
+      }
+    : { minX: 0, minY: 0, maxX: width - 1, maxY: height - 1 }
+
+  for (let y = bounds.minY; y <= bounds.maxY; y += 1) {
+    for (let x = bounds.minX; x <= bounds.maxX; x += 1) {
       const idx = y * width + x
-      if (seen[idx] || !isForeground(data, idx, cutoff)) continue
+      if (seen[idx] || !isForeground(data, idx, cutoff, mode)) continue
       let area = 0
       let sumX = 0
       let sumY = 0
+      let minX = x
+      let maxX = x
+      let minY = y
+      let maxY = y
       stack.push(idx)
       seen[idx] = 1
       while (stack.length) {
@@ -211,17 +247,28 @@ function connectedComponents(imageData, cutoff, minArea, maxArea) {
         area += 1
         sumX += cx
         sumY += cy
+        minX = Math.min(minX, cx)
+        maxX = Math.max(maxX, cx)
+        minY = Math.min(minY, cy)
+        maxY = Math.max(maxY, cy)
         const neighbors = [current - 1, current + 1, current - width, current + width]
         for (const next of neighbors) {
           if (next < 0 || next >= seen.length || seen[next]) continue
           const nx = next % width
+          const ny = Math.floor(next / width)
           if (Math.abs(nx - cx) > 1) continue
-          if (!isForeground(data, next, cutoff)) continue
+          if (nx < bounds.minX || nx > bounds.maxX || ny < bounds.minY || ny > bounds.maxY) continue
+          if (!isForeground(data, next, cutoff, mode)) continue
           seen[next] = 1
           stack.push(next)
         }
       }
-      if (area >= minArea && area <= maxArea) {
+      const boxWidth = maxX - minX + 1
+      const boxHeight = maxY - minY + 1
+      const boxArea = boxWidth * boxHeight
+      const roundness = boxArea ? area / boxArea : 0
+      const aspect = Math.max(boxWidth, boxHeight) / Math.max(1, Math.min(boxWidth, boxHeight))
+      if (area >= minArea && area <= maxArea && roundness >= minRoundness && aspect <= 3.2) {
         result.push({ x: sumX / area, y: sumY / area, area })
       }
     }
@@ -229,19 +276,20 @@ function connectedComponents(imageData, cutoff, minArea, maxArea) {
   return result
 }
 
-function isForeground(data, index, cutoff) {
+function isForeground(data, index, cutoff, mode) {
   const i = index * 4
   const r = data[i]
   const g = data[i + 1]
   const b = data[i + 2]
   const brightness = (r + g + b) / 3
-  return brightness > cutoff
+  return mode === 'dark' ? brightness < cutoff : brightness > cutoff
 }
 
 function resetMeasurements() {
   state.mmPerPixel = null
   state.scale = null
   state.siliqueLine = null
+  state.seedRoi = null
   state.seedPoints = []
   state.detectedSeeds = []
   pendingPoints.value = []
@@ -264,7 +312,7 @@ function saveRecord() {
     siliqueLengthMm: metrics.value.siliqueLengthMm,
     seedCount: metrics.value.seedCount,
     seedsPerCm: metrics.value.seedsPerCm,
-    method: state.detectedSeeds.length ? '自动候选+人工确认' : '人工标注',
+    method: state.detectedSeeds.length ? '候选点+人工确认' : '人工标注',
     imageName: imageName.value,
     cloudUrl: form.cloudUrl.trim(),
     notes: form.notes.trim(),
@@ -303,6 +351,7 @@ function draw() {
   ctx.drawImage(image.value, 0, 0, canvas.value.width, canvas.value.height)
   drawLine(ctx, state.scale, '#2563eb', '标尺')
   drawLine(ctx, state.siliqueLine, '#16a34a', metrics.value.siliqueLengthMm ? `角果 ${metrics.value.siliqueLengthMm} mm` : '角果')
+  drawRect(ctx, state.seedRoi, '#9333ea', '籽粒区域')
   state.seedPoints.forEach((point, index) => drawSeed(ctx, point, index + 1))
   pendingPoints.value.forEach((point) => drawDot(ctx, point, '#111827'))
 }
@@ -328,6 +377,16 @@ function drawSeed(ctx, point, index) {
   ctx.arc(point.x, point.y, 7, 0, Math.PI * 2)
   ctx.stroke()
   if (index <= 99) drawLabel(ctx, String(index), point.x + 7, point.y - 7, '#dc2626')
+}
+
+function drawRect(ctx, rect, color, label) {
+  if (!rect) return
+  ctx.strokeStyle = color
+  ctx.lineWidth = 3
+  ctx.setLineDash([8, 5])
+  ctx.strokeRect(rect.x, rect.y, rect.width, rect.height)
+  ctx.setLineDash([])
+  drawLabel(ctx, label, rect.x + 6, rect.y + 20, color)
 }
 
 function drawDot(ctx, point, color) {
@@ -395,6 +454,10 @@ window.addEventListener('resize', () => {
           <Ruler :size="17" />
           角果长度
         </button>
+        <button type="button" :class="{ active: mode === 'seedRoi' }" @click="mode = 'seedRoi'; pendingPoints = []">
+          <Square :size="17" />
+          框选籽粒区
+        </button>
         <button type="button" :class="{ active: mode === 'seedAdd' }" @click="mode = 'seedAdd'; pendingPoints = []">
           <PlusCircle :size="17" />
           补籽粒
@@ -405,7 +468,7 @@ window.addEventListener('resize', () => {
         </button>
         <button type="button" :disabled="!image" @click="autoDetectSeeds">
           <Play :size="17" />
-          自动数籽粒
+          生成候选点
         </button>
         <button type="button" @click="clearSeeds">
           <Trash2 :size="17" />
@@ -454,10 +517,18 @@ window.addEventListener('resize', () => {
 
       <section class="panel">
         <div class="panel-title">自动识别参数</div>
+        <label class="range-field">
+          籽粒颜色
+          <select v-model="foregroundMode">
+            <option value="light">比背景亮</option>
+            <option value="dark">比背景暗</option>
+          </select>
+        </label>
         <label class="range-field">亮度阈值 {{ threshold }}<input v-model.number="threshold" type="range" min="10" max="245" /></label>
         <label class="range-field">最小面积 {{ minSeedArea }}<input v-model.number="minSeedArea" type="range" min="2" max="300" /></label>
         <label class="range-field">最大面积 {{ maxSeedArea }}<input v-model.number="maxSeedArea" type="range" min="100" max="5000" /></label>
-        <p class="hint">适合深色背景、籽粒分散的照片。自动结果需要人工确认。</p>
+        <label class="range-field">圆整度 {{ minRoundness }}<input v-model.number="minRoundness" type="range" min="0.05" max="0.9" step="0.05" /></label>
+        <p class="hint">先点“框选籽粒区”框住籽粒，再生成候选点。候选点不是最终结果，需要用“补籽粒/删籽粒”人工确认。</p>
       </section>
     </aside>
   </section>
