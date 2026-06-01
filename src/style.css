@@ -265,6 +265,32 @@ video {
   opacity: 0;
 }
 
+.native-file {
+  min-height: 46px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  display: grid;
+  gap: 6px;
+  padding: 8px 10px;
+}
+
+.native-file span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 700;
+}
+
+.native-file input {
+  min-height: auto;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  font-size: 13px;
+}
+
 .scale-field {
   width: 130px;
 }

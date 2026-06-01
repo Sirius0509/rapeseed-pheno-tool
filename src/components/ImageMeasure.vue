@@ -16,7 +16,6 @@ import { angleFromThreePoints, distance, round, verticalDistance } from '../util
 const emit = defineEmits(['metrics-change'])
 
 const canvas = ref(null)
-const fileInput = ref(null)
 const image = ref(null)
 const imageName = ref('')
 const mode = ref('scale')
@@ -60,10 +59,6 @@ watch(metrics, (value) => emit('metrics-change', value), { immediate: true })
 function cmValue(pixels) {
   if (!state.cmPerPixel || !pixels) return ''
   return round(pixels * state.cmPerPixel)
-}
-
-function chooseFile() {
-  fileInput.value?.click()
 }
 
 function loadFile(event) {
@@ -263,11 +258,14 @@ window.addEventListener('resize', () => {
 <template>
   <section class="measure-shell">
     <div class="toolbar">
-      <button class="primary" type="button" @click="chooseFile">
-        <ImagePlus :size="18" />
-        上传/拍照
-      </button>
-      <input ref="fileInput" class="hidden-input" type="file" accept="image/*" capture="environment" @change="loadFile" />
+      <label class="native-file">
+        <span><ImagePlus :size="18" /> 拍照上传</span>
+        <input type="file" accept="image/*" capture="environment" @change="loadFile" />
+      </label>
+      <label class="native-file">
+        <span><ImagePlus :size="18" /> 从相册选择</span>
+        <input type="file" accept="image/*" @change="loadFile" />
+      </label>
       <label class="scale-field">
         标尺长度 cm
         <input v-model.number="scaleLength" type="number" min="1" />
