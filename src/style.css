@@ -78,7 +78,8 @@ button.ghost {
 }
 
 input,
-textarea {
+textarea,
+select {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -363,6 +364,30 @@ canvas {
 .metric-grid strong,
 .current-panel dd {
   font-size: 15px;
+}
+
+.mini-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.mini-stats div {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px;
+  display: grid;
+  gap: 4px;
+}
+
+.mini-stats span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.mini-stats strong {
+  font-size: 18px;
 }
 
 .current-panel dl {

@@ -16,7 +16,7 @@ import {
 } from '@lucide/vue'
 import { distance, round } from '../utils/geometry'
 import { exportSiliqueRecords } from '../utils/exportExcel'
-import { exportSiliqueTrainingData } from '../utils/exportTrainingData'
+import { exportSiliqueTrainingData, exportSiliqueYoloDataset } from '../utils/exportTrainingData'
 import { loadSiliqueRecords, saveSiliqueRecords } from '../utils/storage'
 
 const canvas = ref(null)
@@ -33,6 +33,7 @@ const form = reactive({
   sampleId: '',
   replicate: '',
   siliqueId: 'S001',
+  quality: 'good',
   notes: '',
   cloudUrl: '',
 })
@@ -52,6 +53,7 @@ const state = reactive({
   seedRoi: null,
   seedPoints: [],
   detectedSeeds: [],
+  deletedSeeds: [],
   previewMask: false,
 })
 
@@ -65,6 +67,20 @@ const metrics = computed(() => {
     siliqueLengthMm,
     seedCount,
     seedsPerCm,
+  }
+})
+
+const trainingStats = computed(() => {
+  const corrected = records.value.filter((record) => (record.seedPoints || []).length)
+  const yoloReady = records.value.filter((record) => record.imageDataUrl && (record.seedPoints || []).length && record.quality !== 'exclude')
+  const seedAnnotations = corrected.reduce((sum, record) => sum + (record.seedPoints?.length || 0), 0)
+  const lowQuality = records.value.filter((record) => ['blurry', 'reflective', 'overlapping', 'edge_interference', 'exclude'].includes(record.quality)).length
+  return {
+    correctedImages: corrected.length,
+    seedAnnotations,
+    averageSeeds: corrected.length ? round(seedAnnotations / corrected.length, 1) : 0,
+    lowQuality,
+    yoloReady: yoloReady.length,
   }
 })
 
@@ -141,7 +157,7 @@ function handleCanvasClick(event) {
   if (!image.value) return
   const point = canvasPoint(event)
   if (mode.value === 'seedAdd') {
-    state.seedPoints.push(point)
+    state.seedPoints.push({ ...point, source: 'manual_add' })
     draw()
     return
   }
@@ -192,7 +208,10 @@ function removeNearestSeed(point) {
       bestIndex = index
     }
   })
-  if (bestIndex >= 0 && bestDistance < 35) state.seedPoints.splice(bestIndex, 1)
+  if (bestIndex >= 0 && bestDistance < 35) {
+    const [removed] = state.seedPoints.splice(bestIndex, 1)
+    state.deletedSeeds.push({ ...removed, deletedAt: new Date().toISOString() })
+  }
 }
 
 async function autoDetectSeeds() {
@@ -235,8 +254,9 @@ async function detectSeedsWithService() {
   if (!response.ok) throw new Error(`Seed service failed: ${response.status}`)
   const result = await response.json()
   const points = Array.isArray(result.points) ? result.points : []
-  state.detectedSeeds = points
-  state.seedPoints = points
+  const normalized = points.map((point) => ({ ...point, source: 'auto' }))
+  state.detectedSeeds = normalized
+  state.seedPoints = normalized
   if (points.length) {
     const confidenceMap = { high: '高', medium: '中', low: '低' }
     const confidence = confidenceMap[result.confidence] || '未知'
@@ -280,8 +300,9 @@ function detectSeedsInBrowser() {
       y: point.y / scale,
       area: point.area / areaScale,
     }))
-    state.detectedSeeds = points
-    state.seedPoints = points
+    const normalized = points.map((point) => ({ ...point, source: 'browser_auto' }))
+    state.detectedSeeds = normalized
+    state.seedPoints = normalized
     detectStatus.value = points.length
       ? `已生成 ${points.length} 个候选点，请人工增删确认。`
       : '没有生成候选点。请调整阈值/面积，或先框选更准确的籽粒区域。'
@@ -380,36 +401,59 @@ function resetMeasurements() {
   state.seedRoi = null
   state.seedPoints = []
   state.detectedSeeds = []
+  state.deletedSeeds = []
   pendingPoints.value = []
 }
 
 function clearSeeds() {
   state.seedPoints = []
   state.detectedSeeds = []
+  state.deletedSeeds = []
   detectStatus.value = '已清空籽粒点。'
   draw()
 }
 
 function saveRecord() {
   if (!form.sampleId.trim() || !form.siliqueId.trim()) return
+  const imageDataUrl = canvas.value && image.value ? canvas.value.toDataURL('image/jpeg', 0.9) : ''
   const record = {
     id: crypto.randomUUID(),
     genotype: form.genotype.trim(),
     sampleId: form.sampleId.trim(),
     replicate: form.replicate.trim(),
     siliqueId: form.siliqueId.trim(),
+    quality: form.quality,
     siliqueLengthMm: metrics.value.siliqueLengthMm,
     seedCount: metrics.value.seedCount,
     seedsPerCm: metrics.value.seedsPerCm,
     method: state.detectedSeeds.length ? '候选点+人工确认' : '人工标注',
     imageName: imageName.value,
+    imageDataUrl,
+    imageWidth: canvas.value?.width || null,
+    imageHeight: canvas.value?.height || null,
     cloudUrl: form.cloudUrl.trim(),
     notes: form.notes.trim(),
+    seedRoi: state.seedRoi,
+    autoSeedPoints: state.detectedSeeds.map(cleanPoint),
+    seedPoints: state.seedPoints.map(cleanPoint),
+    deletedSeedPoints: state.deletedSeeds.map(cleanPoint),
+    rawAutoCount: state.detectedSeeds.length,
+    correctedCount: state.seedPoints.length,
     measuredAt: new Date().toISOString().slice(0, 10),
   }
   records.value = [record, ...records.value]
   saveSiliqueRecords(records.value)
   incrementSiliqueId()
+}
+
+function cleanPoint(point) {
+  return {
+    x: round(point.x, 2),
+    y: round(point.y, 2),
+    area: point.area ? round(point.area, 2) : undefined,
+    source: point.source || 'manual',
+    review: Boolean(point.review),
+  }
 }
 
 function incrementSiliqueId() {
@@ -589,6 +633,17 @@ window.addEventListener('resize', () => {
           <label>样品编号<input v-model="form.sampleId" placeholder="例如 P01" /></label>
           <label>重复<input v-model="form.replicate" placeholder="重复编号" /></label>
           <label>角果编号<input v-model="form.siliqueId" placeholder="S001" /></label>
+          <label>
+            图片质量
+            <select v-model="form.quality">
+              <option value="good">可训练</option>
+              <option value="blurry">模糊</option>
+              <option value="reflective">反光</option>
+              <option value="overlapping">籽粒粘连</option>
+              <option value="edge_interference">边缘干扰</option>
+              <option value="exclude">不进训练集</option>
+            </select>
+          </label>
           <label class="wide">云端链接<input v-model="form.cloudUrl" placeholder="云端上传接入后自动填写" /></label>
           <label class="wide">备注<textarea v-model="form.notes" rows="3"></textarea></label>
         </div>
@@ -624,6 +679,18 @@ window.addEventListener('resize', () => {
         <p class="hint status">{{ detectStatus }}</p>
         <p class="hint">先点“框选籽粒区”框住籽粒，再生成候选点。候选点不是最终结果，需要用“补籽粒/删籽粒”人工确认。</p>
       </section>
+
+      <section class="panel">
+        <div class="panel-title">训练数据</div>
+        <div class="mini-stats">
+          <div><span>已校正图片</span><strong>{{ trainingStats.correctedImages }}</strong></div>
+          <div><span>籽粒标注</span><strong>{{ trainingStats.seedAnnotations }}</strong></div>
+          <div><span>平均粒数</span><strong>{{ trainingStats.averageSeeds }}</strong></div>
+          <div><span>可导出 YOLO</span><strong>{{ trainingStats.yoloReady }}</strong></div>
+          <div><span>低质图片</span><strong>{{ trainingStats.lowQuality }}</strong></div>
+        </div>
+        <p class="hint">保存记录时会同时保存原图、自动点位、删除点位和最终校正点位。训练检测模型时以最终校正点位为准。</p>
+      </section>
     </aside>
   </section>
 
@@ -636,6 +703,7 @@ window.addEventListener('resize', () => {
       <div class="button-row">
         <button type="button" :disabled="!records.length" @click="exportSiliqueRecords(records)">导出 Excel</button>
         <button type="button" :disabled="!records.length" @click="exportSiliqueTrainingData(records)">导出训练数据</button>
+        <button type="button" :disabled="!trainingStats.yoloReady" @click="exportSiliqueYoloDataset(records)">导出 YOLO 数据集</button>
         <button class="ghost" type="button" :disabled="!records.length" @click="clearRecords">清空</button>
       </div>
     </div>
@@ -649,12 +717,13 @@ window.addEventListener('resize', () => {
             <th>长度 mm</th>
             <th>籽粒数</th>
             <th>粒数/cm</th>
+            <th>质量</th>
             <th>方式</th>
             <th>日期</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-if="!records.length"><td colspan="8">暂无记录</td></tr>
+          <tr v-if="!records.length"><td colspan="9">暂无记录</td></tr>
           <tr v-for="record in records" :key="record.id">
             <td>{{ record.genotype }}</td>
             <td>{{ record.sampleId }}</td>
@@ -662,6 +731,7 @@ window.addEventListener('resize', () => {
             <td>{{ record.siliqueLengthMm }}</td>
             <td>{{ record.seedCount }}</td>
             <td>{{ record.seedsPerCm }}</td>
+            <td>{{ record.quality || '-' }}</td>
             <td>{{ record.method }}</td>
             <td>{{ record.measuredAt }}</td>
           </tr>
