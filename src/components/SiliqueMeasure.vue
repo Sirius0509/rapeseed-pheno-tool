@@ -42,7 +42,7 @@ const threshold = ref(65)
 const minSeedArea = ref(18)
 const maxSeedArea = ref(1400)
 const minRoundness = ref(0.25)
-const foregroundMode = ref('light')
+const foregroundMode = ref('auto')
 const serviceUrl = ref(localStorage.getItem('rapeseed-pheno-tool:seed-service-url') || '')
 const detectStatus = ref('先框选籽粒区域，再生成候选点。')
 const detecting = ref(false)
@@ -58,6 +58,9 @@ const state = reactive({
   seedPoints: [],
   detectedSeeds: [],
   deletedSeeds: [],
+  confirmedSiliqueLengthMm: null,
+  confirmedSeedCount: null,
+  confirmedSeedsPerCm: null,
   previewMask: false,
 })
 
@@ -73,6 +76,12 @@ const metrics = computed(() => {
     seedsPerCm,
   }
 })
+
+const confirmedMetrics = computed(() => ({
+  siliqueLengthMm: state.confirmedSiliqueLengthMm ?? metrics.value.siliqueLengthMm,
+  seedCount: state.confirmedSeedCount ?? metrics.value.seedCount,
+  seedsPerCm: state.confirmedSeedsPerCm ?? metrics.value.seedsPerCm,
+}))
 
 const trainingStats = computed(() => {
   const corrected = records.value.filter((record) => (record.seedPoints || []).length)
@@ -162,6 +171,8 @@ function handleCanvasClick(event) {
   const point = canvasPoint(event)
   if (mode.value === 'seedAdd') {
     state.seedPoints.push({ ...point, source: 'manual_add' })
+    state.confirmedSeedCount = null
+    state.confirmedSeedsPerCm = null
     draw()
     return
   }
@@ -183,6 +194,8 @@ function handleCanvasClick(event) {
         points: [...pendingPoints.value],
         pixels: distance(pendingPoints.value[0], pendingPoints.value[1]),
       }
+      state.confirmedSiliqueLengthMm = null
+      state.confirmedSeedsPerCm = null
     }
     if (mode.value === 'seedRoi') {
       state.seedRoi = normalizeRect(pendingPoints.value[0], pendingPoints.value[1])
@@ -215,6 +228,8 @@ function removeNearestSeed(point) {
   if (bestIndex >= 0 && bestDistance < 35) {
     const [removed] = state.seedPoints.splice(bestIndex, 1)
     state.deletedSeeds.push({ ...removed, deletedAt: new Date().toISOString() })
+    state.confirmedSeedCount = null
+    state.confirmedSeedsPerCm = null
   }
 }
 
@@ -253,6 +268,7 @@ async function detectSeedsWithService() {
       minCircularity: 0.12,
       useWatershed: true,
       edgeMarginRatio: 0.03,
+      useYolo: true,
     }),
   })
   if (!response.ok) throw new Error(`Seed service failed: ${response.status}`)
@@ -261,15 +277,32 @@ async function detectSeedsWithService() {
   const normalized = points.map((point) => ({ ...point, source: 'auto' }))
   state.detectedSeeds = normalized
   state.seedPoints = normalized
+  state.confirmedSeedCount = null
+  state.confirmedSeedsPerCm = null
   if (points.length) {
     const confidenceMap = { high: '高', medium: '中', low: '低' }
     const confidence = confidenceMap[result.confidence] || '未知'
     const reviewText = result.reviewCount ? `，疑似粘连/异常 ${result.reviewCount} 处` : ''
-    detectStatus.value = `后端分水岭识别生成 ${points.length} 个候选点，置信度 ${confidence}${reviewText}。请人工增删确认。`
+    const engineText = result.engine === 'trained-yolo-seed-detector' ? '训练模型' : '多算法融合'
+    detectStatus.value = `后端${engineText}生成 ${points.length} 个候选点，置信度 ${confidence}${reviewText}。请人工增删后点击确认籽粒数。`
   } else {
     detectStatus.value = '后端识别没有生成候选点。请检查框选区域、拍照质量或参数。'
   }
   draw()
+}
+
+function confirmSiliqueLength() {
+  if (!metrics.value.siliqueLengthMm) return
+  state.confirmedSiliqueLengthMm = metrics.value.siliqueLengthMm
+  if (state.confirmedSeedCount) {
+    state.confirmedSeedsPerCm = round(state.confirmedSeedCount / (state.confirmedSiliqueLengthMm / 10), 2)
+  }
+}
+
+function confirmSeedCount() {
+  state.confirmedSeedCount = metrics.value.seedCount
+  state.confirmedSeedsPerCm = metrics.value.siliqueLengthMm && metrics.value.seedCount ? round(metrics.value.seedCount / (metrics.value.siliqueLengthMm / 10), 2) : ''
+  detectStatus.value = `已确认籽粒数 ${state.confirmedSeedCount}。保存记录时会自动填入该数值和点位。`
 }
 
 async function startYoloTraining() {
@@ -378,6 +411,8 @@ function detectSeedsInBrowser() {
     const normalized = points.map((point) => ({ ...point, source: 'browser_auto' }))
     state.detectedSeeds = normalized
     state.seedPoints = normalized
+    state.confirmedSeedCount = null
+    state.confirmedSeedsPerCm = null
     detectStatus.value = points.length
       ? `已生成 ${points.length} 个候选点，请人工增删确认。`
       : '没有生成候选点。请调整阈值/面积，或先框选更准确的籽粒区域。'
@@ -477,6 +512,9 @@ function resetMeasurements() {
   state.seedPoints = []
   state.detectedSeeds = []
   state.deletedSeeds = []
+  state.confirmedSiliqueLengthMm = null
+  state.confirmedSeedCount = null
+  state.confirmedSeedsPerCm = null
   pendingPoints.value = []
 }
 
@@ -484,6 +522,8 @@ function clearSeeds() {
   state.seedPoints = []
   state.detectedSeeds = []
   state.deletedSeeds = []
+  state.confirmedSeedCount = null
+  state.confirmedSeedsPerCm = null
   detectStatus.value = '已清空籽粒点。'
   draw()
 }
@@ -498,9 +538,9 @@ function saveRecord() {
     replicate: form.replicate.trim(),
     siliqueId: form.siliqueId.trim(),
     quality: form.quality,
-    siliqueLengthMm: metrics.value.siliqueLengthMm,
-    seedCount: metrics.value.seedCount,
-    seedsPerCm: metrics.value.seedsPerCm,
+    siliqueLengthMm: confirmedMetrics.value.siliqueLengthMm,
+    seedCount: confirmedMetrics.value.seedCount,
+    seedsPerCm: confirmedMetrics.value.seedsPerCm,
     method: state.detectedSeeds.length ? '候选点+人工确认' : '人工标注',
     imageName: imageName.value,
     imageDataUrl,
@@ -513,7 +553,9 @@ function saveRecord() {
     seedPoints: state.seedPoints.map(cleanPoint),
     deletedSeedPoints: state.deletedSeeds.map(cleanPoint),
     rawAutoCount: state.detectedSeeds.length,
-    correctedCount: state.seedPoints.length,
+    correctedCount: confirmedMetrics.value.seedCount,
+    confirmedSiliqueLengthMm: state.confirmedSiliqueLengthMm,
+    confirmedSeedCount: state.confirmedSeedCount,
     measuredAt: new Date().toISOString().slice(0, 10),
   }
   records.value = [record, ...records.value]
@@ -702,6 +744,8 @@ onBeforeUnmount(() => {
         <div><span>角果长度</span><strong>{{ metrics.siliqueLengthMm || '-' }} mm</strong></div>
         <div><span>籽粒数</span><strong>{{ metrics.seedCount }}</strong></div>
         <div><span>粒数每 cm</span><strong>{{ metrics.seedsPerCm || '-' }}</strong></div>
+        <div><span>已确认长度</span><strong>{{ state.confirmedSiliqueLengthMm || '-' }} mm</strong></div>
+        <div><span>已确认籽粒</span><strong>{{ state.confirmedSeedCount ?? '-' }}</strong></div>
       </div>
     </div>
 
@@ -740,6 +784,26 @@ onBeforeUnmount(() => {
       </section>
 
       <section class="panel">
+        <div class="panel-title">确认数据</div>
+        <div class="mini-stats">
+          <div><span>保存长度</span><strong>{{ confirmedMetrics.siliqueLengthMm || '-' }} mm</strong></div>
+          <div><span>保存籽粒数</span><strong>{{ confirmedMetrics.seedCount }}</strong></div>
+          <div><span>保存粒数/cm</span><strong>{{ confirmedMetrics.seedsPerCm || '-' }}</strong></div>
+        </div>
+        <div class="button-row">
+          <button type="button" :disabled="!metrics.siliqueLengthMm" @click="confirmSiliqueLength">
+            <Save :size="18" />
+            确认角果长度
+          </button>
+          <button type="button" :disabled="!image" @click="confirmSeedCount">
+            <Save :size="18" />
+            确认籽粒数
+          </button>
+        </div>
+        <p class="hint">确认后点击“保存记录”，系统会自动填入确认后的长度、籽粒数和最终点位。</p>
+      </section>
+
+      <section class="panel">
         <div class="panel-title">自动识别参数</div>
         <label class="range-field">
           识别服务地址
@@ -748,6 +812,7 @@ onBeforeUnmount(() => {
         <label class="range-field">
           籽粒颜色
           <select v-model="foregroundMode">
+            <option value="auto">自动判断</option>
             <option value="light">比背景亮</option>
             <option value="dark">比背景暗</option>
           </select>

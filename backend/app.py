@@ -44,13 +44,14 @@ class Roi(BaseModel):
 class SeedCandidateRequest(BaseModel):
     imageDataUrl: str
     roi: Optional[Roi] = None
-    foregroundMode: Literal["light", "dark"] = "light"
+    foregroundMode: Literal["auto", "light", "dark"] = "auto"
     minArea: float = Field(default=12, ge=1)
     maxArea: float = Field(default=1800, ge=2)
     minCircularity: float = Field(default=0.18, ge=0, le=1)
     minRoundness: float = Field(default=0.12, ge=0, le=1)
     useWatershed: bool = True
     edgeMarginRatio: float = Field(default=0.03, ge=0, le=0.3)
+    useYolo: bool = True
 
 
 class SeedPoint(BaseModel):
@@ -113,7 +114,7 @@ def clamp_roi(roi: Optional[Roi], width: int, height: int) -> tuple:
     return x0, y0, x1, y1
 
 
-def make_mask(gray: np.ndarray, foreground_mode: str) -> np.ndarray:
+def make_mask(gray: np.ndarray, foreground_mode: Literal["light", "dark"]) -> np.ndarray:
     background = cv2.GaussianBlur(gray, (0, 0), 35)
     corrected = cv2.divide(gray, background, scale=255)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
@@ -135,6 +136,13 @@ def make_mask(gray: np.ndarray, foreground_mode: str) -> np.ndarray:
     opened = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
     closed = cv2.morphologyEx(opened, cv2.MORPH_CLOSE, kernel, iterations=1)
     return closed
+
+
+def preprocess_gray(gray: np.ndarray) -> np.ndarray:
+    background = cv2.GaussianBlur(gray, (0, 0), 35)
+    corrected = cv2.divide(gray, background, scale=255)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    return cv2.GaussianBlur(clahe.apply(corrected), (5, 5), 0)
 
 
 def remove_edge_margin(mask: np.ndarray, ratio: float) -> np.ndarray:
@@ -254,9 +262,206 @@ def contour_candidates(mask: np.ndarray, params: SeedCandidateRequest, offset: t
     return points, warnings, median_area
 
 
+def blob_candidates(gray: np.ndarray, params: SeedCandidateRequest, offset: tuple[int, int], foreground_mode: Literal["light", "dark"]):
+    processed = preprocess_gray(gray)
+    if foreground_mode == "dark":
+        processed = cv2.bitwise_not(processed)
+    detector_params = cv2.SimpleBlobDetector_Params()
+    detector_params.filterByArea = True
+    detector_params.minArea = max(3, params.minArea * 0.45)
+    detector_params.maxArea = params.maxArea * 2.8
+    detector_params.filterByCircularity = True
+    detector_params.minCircularity = max(0.08, params.minCircularity * 0.45)
+    detector_params.filterByConvexity = False
+    detector_params.filterByInertia = True
+    detector_params.minInertiaRatio = 0.08
+    detector_params.minThreshold = 5
+    detector_params.maxThreshold = 245
+    detector_params.thresholdStep = 8
+    detector = cv2.SimpleBlobDetector_create(detector_params)
+    keypoints = detector.detect(processed)
+    ox, oy = offset
+    result = []
+    for keypoint in keypoints:
+        area = float(np.pi * (keypoint.size / 2) ** 2)
+        result.append(
+            {
+                "x": round(keypoint.pt[0] + ox, 2),
+                "y": round(keypoint.pt[1] + oy, 2),
+                "area": round(area, 2),
+                "circularity": None,
+                "roundness": None,
+                "aspect": 1,
+                "estimatedSeeds": 1,
+                "review": area > params.maxArea,
+                "source": f"blob_{foreground_mode}",
+            }
+        )
+    return result
+
+
+def hough_candidates(gray: np.ndarray, params: SeedCandidateRequest, offset: tuple[int, int]):
+    processed = preprocess_gray(gray)
+    min_radius = max(3, int(np.sqrt(params.minArea / np.pi) * 0.7))
+    max_radius = max(min_radius + 2, int(np.sqrt(params.maxArea / np.pi) * 1.35))
+    circles = cv2.HoughCircles(
+        processed,
+        cv2.HOUGH_GRADIENT,
+        dp=1.2,
+        minDist=max(6, min_radius * 2),
+        param1=80,
+        param2=12,
+        minRadius=min_radius,
+        maxRadius=max_radius,
+    )
+    if circles is None:
+        return []
+    ox, oy = offset
+    result = []
+    for x, y, radius in np.round(circles[0, :]).astype("int"):
+        area = float(np.pi * radius * radius)
+        result.append(
+            {
+                "x": round(float(x + ox), 2),
+                "y": round(float(y + oy), 2),
+                "area": round(area, 2),
+                "circularity": None,
+                "roundness": None,
+                "aspect": 1,
+                "estimatedSeeds": 1,
+                "review": area > params.maxArea,
+                "source": "hough",
+            }
+        )
+    return result
+
+
+def merge_points(point_groups: list[list[dict]], params: SeedCandidateRequest) -> list[dict]:
+    points = [point for group in point_groups for point in group]
+    if not points:
+        return []
+    areas = [point.get("area") for point in points if point.get("area")]
+    median_area = float(np.median(areas)) if areas else params.minArea * 4
+    merge_distance = max(8, min(36, np.sqrt(max(median_area, params.minArea) / np.pi) * 1.45))
+    merged = []
+    for point in sorted(points, key=lambda item: (item["y"], item["x"])):
+        best = None
+        best_distance = None
+        for item in merged:
+            d = float(np.hypot(point["x"] - item["x"], point["y"] - item["y"]))
+            if d <= merge_distance and (best_distance is None or d < best_distance):
+                best = item
+                best_distance = d
+        if best is None:
+            merged.append({**point, "votes": 1, "sources": [point.get("source", "contour")]})
+        else:
+            votes = best["votes"] + 1
+            best["x"] = round((best["x"] * best["votes"] + point["x"]) / votes, 2)
+            best["y"] = round((best["y"] * best["votes"] + point["y"]) / votes, 2)
+            best["area"] = round(max(best.get("area") or 0, point.get("area") or 0), 2)
+            best["votes"] = votes
+            best["sources"].append(point.get("source", "contour"))
+            best["review"] = best.get("review") or point.get("review")
+    filtered = []
+    for point in merged:
+        sources = set(point.get("sources", []))
+        has_contour = any(source.startswith("contour_") for source in sources)
+        has_blob = any(source.startswith("blob_") for source in sources)
+        has_hough = "hough" in sources
+        if point["votes"] >= 2 or (has_contour and has_blob):
+            filtered.append(point)
+        elif has_hough and point.get("area", 0) <= params.maxArea and point["votes"] >= 2:
+            filtered.append(point)
+    return filtered
+
+
+def auto_seed_candidates(gray: np.ndarray, params: SeedCandidateRequest, offset: tuple[int, int]):
+    modes = ["dark", "light"] if params.foregroundMode == "auto" else [params.foregroundMode]
+    mode_results = []
+    for mode in modes:
+        groups = []
+        warnings = []
+        medians = []
+        mask = make_mask(gray, mode)
+        contour_points, contour_warnings, median_area = contour_candidates(mask, params, offset)
+        for point in contour_points:
+            point["source"] = f"contour_{mode}"
+        groups.append(contour_points)
+        groups.append(blob_candidates(gray, params, offset, mode))
+        warnings.extend(contour_warnings)
+        if median_area:
+            medians.append(median_area)
+        groups.append(hough_candidates(gray, params, offset))
+        points = merge_points(groups, params)
+        score = score_candidate_set(points)
+        mode_results.append((score, points, warnings, medians))
+    if not mode_results:
+        return [], [], None
+    _, points, warnings, medians = sorted(mode_results, key=lambda item: item[0], reverse=True)[0]
+    points.sort(key=lambda item: (item["y"], item["x"]))
+    median_area = float(np.median(medians)) if medians else None
+    return points, warnings, median_area
+
+
+def score_candidate_set(points: list[dict]) -> float:
+    if not points:
+        return -1000
+    count = len(points)
+    votes = sum(point.get("votes", 1) for point in points)
+    review = sum(1 for point in points if point.get("review"))
+    count_penalty = max(0, count - 80) * 4
+    review_ratio_penalty = (review / max(1, count)) * 30
+    return votes * 2 + count * 0.4 - review * 8 - review_ratio_penalty - count_penalty
+
+
+def latest_trained_model() -> Optional[Path]:
+    env_path = os.environ.get("RAPESEED_SEED_MODEL")
+    if env_path and Path(env_path).exists():
+        return Path(env_path)
+    candidates = sorted(RUNS_DIR.glob("*/train/seed_detector/weights/best.pt"), key=lambda path: path.stat().st_mtime, reverse=True)
+    return candidates[0] if candidates else None
+
+
+def yolo_seed_candidates(img: np.ndarray, params: SeedCandidateRequest, offset: tuple[int, int]):
+    model_path = latest_trained_model()
+    if not model_path or not params.useYolo:
+        return None
+    try:
+        from ultralytics import YOLO
+
+        model = YOLO(str(model_path))
+        result = model.predict(img, imgsz=1024, conf=0.15, iou=0.45, verbose=False)[0]
+        ox, oy = offset
+        points = []
+        for box in result.boxes:
+            x1, y1, x2, y2 = [float(value) for value in box.xyxy[0].tolist()]
+            area = max(1.0, (x2 - x1) * (y2 - y1))
+            conf = float(box.conf[0])
+            points.append(
+                {
+                    "x": round((x1 + x2) / 2 + ox, 2),
+                    "y": round((y1 + y2) / 2 + oy, 2),
+                    "area": round(area, 2),
+                    "confidence": round(conf, 3),
+                    "source": "trained_yolo",
+                    "review": conf < 0.35,
+                    "estimatedSeeds": 1,
+                }
+            )
+        return points
+    except Exception:
+        return None
+
+
 @app.get("/api/health")
 def health():
-    return {"ok": True, "engine": "opencv-watershed-seed-candidates", "training": "local-yolo"}
+    model_path = latest_trained_model()
+    return {
+        "ok": True,
+        "engine": "opencv-multimethod-seed-candidates",
+        "training": "local-yolo",
+        "trainedModel": str(model_path) if model_path else None,
+    }
 
 
 @app.post("/api/seed-candidates")
@@ -266,8 +471,15 @@ def seed_candidates(payload: SeedCandidateRequest):
     x0, y0, x1, y1 = clamp_roi(payload.roi, width, height)
     crop = img[y0:y1, x0:x1]
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-    mask = make_mask(gray, payload.foregroundMode)
-    points, warnings, median_area = contour_candidates(mask, payload, (x0, y0))
+    yolo_points = yolo_seed_candidates(crop, payload, (x0, y0))
+    if yolo_points is not None and yolo_points:
+        points = yolo_points
+        warnings = []
+        median_area = None
+        engine = "trained-yolo-seed-detector"
+    else:
+        points, warnings, median_area = auto_seed_candidates(gray, payload, (x0, y0))
+        engine = "opencv-multimethod-seed-candidates"
     points.sort(key=lambda item: (item["y"], item["x"]))
     confidence = "high"
     review_count = sum(1 for item in points if item.get("review"))
@@ -276,7 +488,7 @@ def seed_candidates(payload: SeedCandidateRequest):
     if len(points) == 0 or len(points) > 120:
         confidence = "low"
     return {
-        "engine": "opencv-watershed-seed-candidates",
+        "engine": engine,
         "count": len(points),
         "points": points,
         "confidence": confidence,

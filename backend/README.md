@@ -1,7 +1,7 @@
 # Seed Candidate Backend
 
 This optional backend provides stronger seed candidate detection than the in-browser threshold tool and can launch local YOLO training jobs.
-It uses OpenCV illumination correction, Otsu/adaptive thresholding, morphology, distance transform, and watershed splitting for touching seeds.
+It first tries the latest trained YOLO weights under `runs/*/train/seed_detector/weights/best.pt`. If no trained model is available, it falls back to OpenCV multi-method detection: illumination correction, auto dark/light thresholding, morphology, watershed splitting, SimpleBlobDetector, Hough circles, and point merging.
 
 ## Run Locally
 
