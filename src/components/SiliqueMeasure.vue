@@ -655,13 +655,18 @@ function drawLine(ctx, item, color, label) {
   drawLabel(ctx, label, (a.x + b.x) / 2, (a.y + b.y) / 2, color)
 }
 
-function drawSeed(ctx, point, index) {
-  ctx.strokeStyle = '#dc2626'
-  ctx.lineWidth = 2
+function drawSeed(ctx, point) {
+  ctx.strokeStyle = 'rgba(220, 38, 38, 0.85)'
+  ctx.fillStyle = 'rgba(220, 38, 38, 0.18)'
+  ctx.lineWidth = 1.5
   ctx.beginPath()
-  ctx.arc(point.x, point.y, 7, 0, Math.PI * 2)
+  ctx.arc(point.x, point.y, 5, 0, Math.PI * 2)
+  ctx.fill()
   ctx.stroke()
-  if (index <= 99) drawLabel(ctx, String(index), point.x + 7, point.y - 7, '#dc2626')
+  ctx.fillStyle = 'rgba(220, 38, 38, 0.9)'
+  ctx.beginPath()
+  ctx.arc(point.x, point.y, 1.8, 0, Math.PI * 2)
+  ctx.fill()
 }
 
 function drawRect(ctx, rect, color, label) {
