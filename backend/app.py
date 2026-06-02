@@ -1,5 +1,14 @@
 import base64
+import json
+import os
+import shutil
+import subprocess
+import sys
+import threading
+import uuid
 import re
+from datetime import datetime
+from pathlib import Path
 from typing import Optional
 from typing import Literal
 
@@ -11,6 +20,10 @@ from pydantic import BaseModel, Field
 
 
 app = FastAPI(title="Rapeseed seed candidate service")
+BASE_DIR = Path(__file__).resolve().parent
+RUNS_DIR = BASE_DIR / "runs"
+TRAIN_JOBS = {}
+TRAIN_LOCK = threading.Lock()
 
 app.add_middleware(
     CORSMiddleware,
@@ -40,6 +53,36 @@ class SeedCandidateRequest(BaseModel):
     edgeMarginRatio: float = Field(default=0.03, ge=0, le=0.3)
 
 
+class SeedPoint(BaseModel):
+    x: float
+    y: float
+    area: Optional[float] = None
+    source: Optional[str] = None
+    review: Optional[bool] = None
+
+
+class TrainingRecord(BaseModel):
+    id: str
+    imageDataUrl: str
+    imageWidth: int
+    imageHeight: int
+    sampleId: Optional[str] = ""
+    siliqueId: Optional[str] = ""
+    quality: Optional[str] = "good"
+    seedPoints: list[SeedPoint] = Field(default_factory=list)
+    autoSeedPoints: list[SeedPoint] = Field(default_factory=list)
+
+
+class TrainRequest(BaseModel):
+    records: list[TrainingRecord] = Field(default_factory=list)
+    model: str = "yolo11n.pt"
+    epochs: int = Field(default=50, ge=1, le=300)
+    imgsz: int = Field(default=1024, ge=320, le=2048)
+    batch: int = Field(default=4, ge=1, le=64)
+    trainRatio: float = Field(default=0.8, ge=0.5, le=0.95)
+    dryRun: bool = False
+
+
 def decode_data_url(data_url: str) -> np.ndarray:
     payload = re.sub(r"^data:image/[^;]+;base64,", "", data_url)
     raw = base64.b64decode(payload)
@@ -48,6 +91,14 @@ def decode_data_url(data_url: str) -> np.ndarray:
     if img is None:
         raise ValueError("Unable to decode image")
     return img
+
+
+def decode_data_url_bytes(data_url: str) -> tuple[bytes, str]:
+    match = re.match(r"^data:image/([^;]+);base64,(.+)$", data_url)
+    if not match:
+        raise ValueError("Invalid image data URL")
+    ext = "jpg" if match.group(1).lower() in {"jpeg", "jpg"} else match.group(1).lower()
+    return base64.b64decode(match.group(2)), ext
 
 
 def clamp_roi(roi: Optional[Roi], width: int, height: int) -> tuple:
@@ -205,7 +256,7 @@ def contour_candidates(mask: np.ndarray, params: SeedCandidateRequest, offset: t
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "engine": "opencv-watershed-seed-candidates"}
+    return {"ok": True, "engine": "opencv-watershed-seed-candidates", "training": "local-yolo"}
 
 
 @app.post("/api/seed-candidates")
@@ -234,3 +285,181 @@ def seed_candidates(payload: SeedCandidateRequest):
         "reviewCount": review_count,
         "roi": {"x": x0, "y": y0, "width": x1 - x0, "height": y1 - y0},
     }
+
+
+@app.post("/api/train-yolo")
+def train_yolo(payload: TrainRequest):
+    usable = [record for record in payload.records if record.imageDataUrl and record.seedPoints and record.quality != "exclude"]
+    if len(usable) < 2:
+        return {
+            "ok": False,
+            "error": "至少需要 2 张已保存原图且有最终点位的记录，才能划分 train/val 并启动训练。",
+        }
+
+    job_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
+    job_dir = RUNS_DIR / job_id
+    job = {
+        "id": job_id,
+        "status": "queued",
+        "createdAt": datetime.now().isoformat(timespec="seconds"),
+        "message": "训练任务已创建。",
+        "datasetDir": str(job_dir / "dataset"),
+        "runDir": str(job_dir / "train"),
+        "trainImages": 0,
+        "valImages": 0,
+        "seedAnnotations": 0,
+        "command": None,
+        "logTail": "",
+        "metrics": None,
+    }
+    with TRAIN_LOCK:
+        TRAIN_JOBS[job_id] = job
+
+    thread = threading.Thread(target=run_training_job, args=(job_id, payload), daemon=True)
+    thread.start()
+    return {"ok": True, "job": job}
+
+
+@app.get("/api/train-yolo/{job_id}")
+def train_status(job_id: str):
+    with TRAIN_LOCK:
+        job = TRAIN_JOBS.get(job_id)
+    if not job:
+        return {"ok": False, "error": "训练任务不存在。"}
+    return {"ok": True, "job": job}
+
+
+def run_training_job(job_id: str, payload: TrainRequest):
+    try:
+        update_job(job_id, status="preparing", message="正在生成 YOLO 数据集。")
+        job_dir = RUNS_DIR / job_id
+        dataset_dir = job_dir / "dataset"
+        train_count, val_count, seed_count = write_yolo_dataset(payload.records, dataset_dir, payload.trainRatio)
+        update_job(
+            job_id,
+            status="ready" if payload.dryRun else "training",
+            message="数据集已生成。" if payload.dryRun else "数据集已生成，正在训练模型。",
+            trainImages=train_count,
+            valImages=val_count,
+            seedAnnotations=seed_count,
+        )
+        if payload.dryRun:
+            update_job(job_id, status="completed", message="试运行完成，只生成数据集，未启动训练。")
+            return
+        command = [
+            sys.executable,
+            "-c",
+            (
+                "from ultralytics import YOLO; "
+                "import sys; "
+                "model=YOLO(sys.argv[1]); "
+                "model.train(data=sys.argv[2], imgsz=int(sys.argv[3]), epochs=int(sys.argv[4]), "
+                "batch=int(sys.argv[5]), project=sys.argv[6], name='seed_detector', exist_ok=True)"
+            ),
+            payload.model,
+            str(dataset_dir / "data.yaml"),
+            str(payload.imgsz),
+            str(payload.epochs),
+            str(payload.batch),
+            str(job_dir / "train"),
+        ]
+        update_job(job_id, command=" ".join(command))
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=str(BASE_DIR))
+        tail = []
+        assert process.stdout is not None
+        for line in process.stdout:
+            tail.append(line.rstrip())
+            tail = tail[-40:]
+            update_job(job_id, logTail="\n".join(tail), message=line.rstrip()[:240] or "训练中。")
+        code = process.wait()
+        if code != 0:
+            update_job(job_id, status="failed", message=f"训练失败，退出码 {code}。", logTail="\n".join(tail))
+            return
+        metrics = collect_training_metrics(job_dir / "train" / "seed_detector")
+        update_job(job_id, status="completed", message="训练完成。", metrics=metrics, logTail="\n".join(tail))
+    except Exception as exc:
+        update_job(job_id, status="failed", message=str(exc))
+
+
+def update_job(job_id: str, **updates):
+    with TRAIN_LOCK:
+        job = TRAIN_JOBS.get(job_id)
+        if not job:
+            return
+        job.update(updates)
+        job["updatedAt"] = datetime.now().isoformat(timespec="seconds")
+
+
+def write_yolo_dataset(records: list[TrainingRecord], dataset_dir: Path, train_ratio: float) -> tuple[int, int, int]:
+    if dataset_dir.exists():
+        shutil.rmtree(dataset_dir)
+    (dataset_dir / "images" / "train").mkdir(parents=True, exist_ok=True)
+    (dataset_dir / "images" / "val").mkdir(parents=True, exist_ok=True)
+    (dataset_dir / "labels" / "train").mkdir(parents=True, exist_ok=True)
+    (dataset_dir / "labels" / "val").mkdir(parents=True, exist_ok=True)
+    usable = [record for record in records if record.imageDataUrl and record.seedPoints and record.quality != "exclude"]
+    usable.sort(key=lambda record: record.id)
+    val_start = max(1, int(len(usable) * train_ratio))
+    seed_count = 0
+    for index, record in enumerate(usable):
+        split = "val" if index >= val_start else "train"
+        base_name = safe_name(f"{record.sampleId or 'sample'}_{record.siliqueId or record.id}")
+        image_bytes, ext = decode_data_url_bytes(record.imageDataUrl)
+        (dataset_dir / "images" / split / f"{base_name}.{ext}").write_bytes(image_bytes)
+        label_text = yolo_label_text(record)
+        (dataset_dir / "labels" / split / f"{base_name}.txt").write_text(label_text, encoding="utf-8")
+        seed_count += len(record.seedPoints)
+    data_yaml = "\n".join(["path: " + str(dataset_dir), "train: images/train", "val: images/val", "names:", "  0: rapeseed_seed", ""])
+    (dataset_dir / "data.yaml").write_text(data_yaml, encoding="utf-8")
+    metadata = {
+        "schema": "rapeseed-seed-detection-yolo-v1",
+        "createdAt": datetime.now().isoformat(timespec="seconds"),
+        "trainImages": min(val_start, len(usable)),
+        "valImages": max(0, len(usable) - val_start),
+        "seedAnnotations": seed_count,
+        "boxSource": "seed center points converted to fixed-size YOLO boxes",
+    }
+    (dataset_dir / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    return metadata["trainImages"], metadata["valImages"], seed_count
+
+
+def yolo_label_text(record: TrainingRecord) -> str:
+    box_px = estimate_box_size(record)
+    lines = []
+    for point in record.seedPoints:
+        cx = clamp(point.x / record.imageWidth)
+        cy = clamp(point.y / record.imageHeight)
+        bw = clamp(box_px / record.imageWidth)
+        bh = clamp(box_px / record.imageHeight)
+        lines.append(f"0 {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}")
+    return "\n".join(lines)
+
+
+def estimate_box_size(record: TrainingRecord) -> float:
+    areas = [point.area for point in [*record.seedPoints, *record.autoSeedPoints] if point.area]
+    if areas:
+        median = float(np.median(areas))
+        return max(10, min(80, np.sqrt(median) * 1.7))
+    return max(12, min(40, min(record.imageWidth, record.imageHeight) * 0.025))
+
+
+def collect_training_metrics(run_dir: Path) -> dict:
+    weights = run_dir / "weights" / "best.pt"
+    results_csv = run_dir / "results.csv"
+    metrics = {"bestWeights": str(weights) if weights.exists() else None, "resultsCsv": str(results_csv) if results_csv.exists() else None}
+    if results_csv.exists():
+        lines = results_csv.read_text(encoding="utf-8", errors="ignore").strip().splitlines()
+        if len(lines) >= 2:
+            headers = [item.strip() for item in lines[0].split(",")]
+            values = [item.strip() for item in lines[-1].split(",")]
+            metrics["lastEpoch"] = dict(zip(headers, values))
+    return metrics
+
+
+def safe_name(value: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "_", value).strip("_")
+    return cleaned or "image"
+
+
+def clamp(value: float) -> float:
+    return max(0, min(1, value))

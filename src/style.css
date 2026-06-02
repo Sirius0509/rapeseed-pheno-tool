@@ -449,6 +449,19 @@ canvas {
   margin-bottom: 10px;
 }
 
+.log-box {
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #101510;
+  color: #e9f2e5;
+  padding: 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
 .table-wrap {
   overflow-x: auto;
 }

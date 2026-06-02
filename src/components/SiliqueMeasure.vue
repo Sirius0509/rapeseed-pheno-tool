@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, reactive, ref } from 'vue'
 import {
   Camera,
   Download,
@@ -46,6 +46,10 @@ const foregroundMode = ref('light')
 const serviceUrl = ref(localStorage.getItem('rapeseed-pheno-tool:seed-service-url') || '')
 const detectStatus = ref('先框选籽粒区域，再生成候选点。')
 const detecting = ref(false)
+const training = ref(false)
+const trainStatus = ref('本地训练需要先运行后端服务，并填写识别服务地址。')
+const trainJob = ref(null)
+let trainPollTimer = null
 const state = reactive({
   mmPerPixel: null,
   scale: null,
@@ -266,6 +270,77 @@ async function detectSeedsWithService() {
     detectStatus.value = '后端识别没有生成候选点。请检查框选区域、拍照质量或参数。'
   }
   draw()
+}
+
+async function startYoloTraining() {
+  if (!serviceUrl.value.trim() || !trainingStats.value.yoloReady) return
+  training.value = true
+  trainStatus.value = '正在提交训练任务...'
+  trainJob.value = null
+  clearTrainingPoll()
+
+  try {
+    localStorage.setItem('rapeseed-pheno-tool:seed-service-url', serviceUrl.value.trim())
+    const endpoint = `${serviceUrl.value.trim().replace(/\/$/, '')}/api/train-yolo`
+    const payloadRecords = records.value.filter((record) => record.imageDataUrl && (record.seedPoints || []).length && record.quality !== 'exclude')
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        records: payloadRecords,
+        model: 'yolo11n.pt',
+        epochs: 50,
+        imgsz: 1024,
+        batch: 4,
+      }),
+    })
+    const result = await response.json()
+    if (!response.ok || !result.ok) throw new Error(result.error || `训练服务失败: ${response.status}`)
+    trainJob.value = result.job
+    updateTrainStatus(result.job)
+    trainPollTimer = window.setInterval(() => pollYoloTraining(result.job.id), 3000)
+  } catch (error) {
+    training.value = false
+    trainStatus.value = `训练任务提交失败：${error.message}`
+  }
+}
+
+async function pollYoloTraining(jobId) {
+  try {
+    const endpoint = `${serviceUrl.value.trim().replace(/\/$/, '')}/api/train-yolo/${jobId}`
+    const response = await fetch(endpoint)
+    const result = await response.json()
+    if (!response.ok || !result.ok) throw new Error(result.error || `状态查询失败: ${response.status}`)
+    trainJob.value = result.job
+    updateTrainStatus(result.job)
+    if (['completed', 'failed'].includes(result.job.status)) {
+      training.value = false
+      clearTrainingPoll()
+    }
+  } catch (error) {
+    training.value = false
+    trainStatus.value = `训练状态查询失败：${error.message}`
+    clearTrainingPoll()
+  }
+}
+
+function updateTrainStatus(job) {
+  const statusMap = {
+    queued: '排队中',
+    preparing: '生成数据集',
+    ready: '数据集已生成',
+    training: '训练中',
+    completed: '训练完成',
+    failed: '训练失败',
+  }
+  const prefix = statusMap[job.status] || job.status
+  const counts = job.trainImages ? `训练 ${job.trainImages} 张，验证 ${job.valImages} 张，标注 ${job.seedAnnotations} 粒。` : ''
+  trainStatus.value = `${prefix}：${job.message || ''} ${counts}`.trim()
+}
+
+function clearTrainingPoll() {
+  if (trainPollTimer) window.clearInterval(trainPollTimer)
+  trainPollTimer = null
 }
 
 function detectSeedsInBrowser() {
@@ -542,6 +617,11 @@ window.addEventListener('resize', () => {
   resizeCanvas()
   draw()
 })
+
+onBeforeUnmount(() => {
+  clearTrainingPoll()
+  stopCamera()
+})
 </script>
 
 <template>
@@ -690,6 +770,15 @@ window.addEventListener('resize', () => {
           <div><span>低质图片</span><strong>{{ trainingStats.lowQuality }}</strong></div>
         </div>
         <p class="hint">保存记录时会同时保存原图、自动点位、删除点位和最终校正点位。训练检测模型时以最终校正点位为准。</p>
+        <div class="button-row">
+          <button class="primary" type="button" :disabled="!serviceUrl.trim() || !trainingStats.yoloReady || training" @click="startYoloTraining">
+            <Play :size="18" />
+            {{ training ? '训练中' : '开始训练模型' }}
+          </button>
+        </div>
+        <p class="hint status">{{ trainStatus }}</p>
+        <pre v-if="trainJob?.logTail" class="log-box">{{ trainJob.logTail }}</pre>
+        <p v-if="trainJob?.metrics?.bestWeights" class="hint">最佳模型：{{ trainJob.metrics.bestWeights }}</p>
       </section>
     </aside>
   </section>
