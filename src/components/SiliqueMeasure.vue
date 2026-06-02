@@ -62,6 +62,8 @@ const state = reactive({
   confirmedSeedCount: null,
   confirmedSeedsPerCm: null,
   confirmedSiliquePhoto: null,
+  manualSiliqueLengthMm: '',
+  manualSeedCount: '',
   previewMask: false,
 })
 
@@ -78,11 +80,15 @@ const metrics = computed(() => {
   }
 })
 
-const confirmedMetrics = computed(() => ({
-  siliqueLengthMm: state.confirmedSiliqueLengthMm ?? metrics.value.siliqueLengthMm,
-  seedCount: state.confirmedSeedCount ?? metrics.value.seedCount,
-  seedsPerCm: state.confirmedSeedsPerCm ?? metrics.value.seedsPerCm,
-}))
+const confirmedMetrics = computed(() => {
+  const siliqueLengthMm = numberOrEmpty(state.manualSiliqueLengthMm)
+  const seedCount = numberOrEmpty(state.manualSeedCount)
+  return {
+    siliqueLengthMm,
+    seedCount,
+    seedsPerCm: siliqueLengthMm && seedCount !== '' ? round(seedCount / (siliqueLengthMm / 10), 2) : '',
+  }
+})
 
 const trainingStats = computed(() => {
   const corrected = records.value.filter((record) => (record.seedPoints || []).length)
@@ -296,6 +302,7 @@ async function detectSeedsWithService() {
 function confirmSiliqueLength() {
   if (!metrics.value.siliqueLengthMm || !canvas.value || !image.value) return
   state.confirmedSiliqueLengthMm = metrics.value.siliqueLengthMm
+  state.manualSiliqueLengthMm = metrics.value.siliqueLengthMm
   state.confirmedSiliquePhoto = {
     imageName: imageName.value,
     imageDataUrl: canvas.value.toDataURL('image/jpeg', 0.9),
@@ -315,6 +322,7 @@ function confirmSiliqueLength() {
 
 function confirmSeedCount() {
   state.confirmedSeedCount = metrics.value.seedCount
+  state.manualSeedCount = metrics.value.seedCount
   const length = state.confirmedSiliqueLengthMm || metrics.value.siliqueLengthMm
   state.confirmedSeedsPerCm = length && metrics.value.seedCount ? round(metrics.value.seedCount / (length / 10), 2) : ''
   detectStatus.value = `已确认籽粒数 ${state.confirmedSeedCount}。保存记录时会自动填入该数值和点位。`
@@ -529,6 +537,7 @@ function resetImageMeasurements() {
   state.deletedSeeds = []
   state.confirmedSeedCount = null
   state.confirmedSeedsPerCm = null
+  state.manualSeedCount = ''
   pendingPoints.value = []
 }
 
@@ -536,6 +545,7 @@ function resetMeasurements() {
   resetImageMeasurements()
   state.confirmedSiliqueLengthMm = null
   state.confirmedSiliquePhoto = null
+  state.manualSiliqueLengthMm = ''
   image.value = null
   imageName.value = ''
 }
@@ -546,12 +556,16 @@ function clearSeeds() {
   state.deletedSeeds = []
   state.confirmedSeedCount = null
   state.confirmedSeedsPerCm = null
+  state.manualSeedCount = ''
   detectStatus.value = '已清空籽粒点。'
   draw()
 }
 
 function saveRecord() {
   if (!form.sampleId.trim() || !form.siliqueId.trim()) return
+  const siliqueLengthMm = numberOrEmpty(state.manualSiliqueLengthMm)
+  const seedCount = numberOrEmpty(state.manualSeedCount)
+  if (siliqueLengthMm === '' || seedCount === '') return
   const seedImageDataUrl = canvas.value && image.value ? canvas.value.toDataURL('image/jpeg', 0.9) : ''
   const siliquePhoto = state.confirmedSiliquePhoto
   const record = {
@@ -561,9 +575,9 @@ function saveRecord() {
     replicate: form.replicate.trim(),
     siliqueId: form.siliqueId.trim(),
     quality: form.quality,
-    siliqueLengthMm: confirmedMetrics.value.siliqueLengthMm,
-    seedCount: confirmedMetrics.value.seedCount,
-    seedsPerCm: confirmedMetrics.value.seedsPerCm,
+    siliqueLengthMm,
+    seedCount,
+    seedsPerCm: siliqueLengthMm ? round(seedCount / (siliqueLengthMm / 10), 2) : '',
     method: state.detectedSeeds.length ? '候选点+人工确认' : '人工标注',
     imageName: imageName.value,
     imageDataUrl: seedImageDataUrl,
@@ -589,6 +603,8 @@ function saveRecord() {
     correctedCount: confirmedMetrics.value.seedCount,
     confirmedSiliqueLengthMm: state.confirmedSiliqueLengthMm,
     confirmedSeedCount: state.confirmedSeedCount,
+    manualSiliqueLengthMm: siliqueLengthMm,
+    manualSeedCount: seedCount,
     measuredAt: new Date().toISOString().slice(0, 10),
   }
   records.value = [record, ...records.value]
@@ -596,6 +612,12 @@ function saveRecord() {
   incrementSiliqueId()
   resetMeasurements()
   draw()
+}
+
+function numberOrEmpty(value) {
+  if (value === null || value === undefined || value === '') return ''
+  const number = Number(value)
+  return Number.isFinite(number) ? number : ''
 }
 
 function cleanPoint(point) {
@@ -784,8 +806,8 @@ onBeforeUnmount(() => {
         <div><span>角果长度</span><strong>{{ metrics.siliqueLengthMm || '-' }} mm</strong></div>
         <div><span>籽粒数</span><strong>{{ metrics.seedCount }}</strong></div>
         <div><span>粒数每 cm</span><strong>{{ metrics.seedsPerCm || '-' }}</strong></div>
-        <div><span>已确认长度</span><strong>{{ state.confirmedSiliqueLengthMm || '-' }} mm</strong></div>
-        <div><span>已确认籽粒</span><strong>{{ state.confirmedSeedCount ?? '-' }}</strong></div>
+        <div><span>保存长度</span><strong>{{ confirmedMetrics.siliqueLengthMm || '-' }} mm</strong></div>
+        <div><span>保存籽粒</span><strong>{{ confirmedMetrics.seedCount !== '' ? confirmedMetrics.seedCount : '-' }}</strong></div>
       </div>
     </div>
 
@@ -812,7 +834,7 @@ onBeforeUnmount(() => {
           <label class="wide">备注<textarea v-model="form.notes" rows="3"></textarea></label>
         </div>
         <div class="button-row">
-          <button class="primary" type="button" :disabled="!form.sampleId || !form.siliqueId || !state.confirmedSiliqueLengthMm || state.confirmedSeedCount === null" @click="saveRecord">
+          <button class="primary" type="button" :disabled="!form.sampleId || !form.siliqueId || confirmedMetrics.siliqueLengthMm === '' || confirmedMetrics.seedCount === ''" @click="saveRecord">
             <Save :size="18" />
             保存记录
           </button>
@@ -825,10 +847,10 @@ onBeforeUnmount(() => {
 
       <section class="panel">
         <div class="panel-title">确认数据</div>
-        <div class="mini-stats">
-          <div><span>保存长度</span><strong>{{ confirmedMetrics.siliqueLengthMm || '-' }} mm</strong></div>
-          <div><span>保存籽粒数</span><strong>{{ confirmedMetrics.seedCount }}</strong></div>
-          <div><span>保存粒数/cm</span><strong>{{ confirmedMetrics.seedsPerCm || '-' }}</strong></div>
+        <div class="form-grid">
+          <label>保存长度 mm<input v-model.number="state.manualSiliqueLengthMm" type="number" min="0" step="0.01" placeholder="可自动确认或手动输入" /></label>
+          <label>保存籽粒数<input v-model.number="state.manualSeedCount" type="number" min="0" step="1" placeholder="可自动确认或手动输入" /></label>
+          <label class="wide">保存粒数/cm<input :value="confirmedMetrics.seedsPerCm || ''" readonly placeholder="自动计算" /></label>
         </div>
         <div class="button-row">
           <button type="button" :disabled="!metrics.siliqueLengthMm" @click="confirmSiliqueLength">
@@ -840,7 +862,7 @@ onBeforeUnmount(() => {
             确认籽粒数
           </button>
         </div>
-        <p class="hint">先拍角果并确认长度，再重新拍该角果剥开的籽粒照片并确认籽粒数。保存记录会把两张照片和两类数据写进同一条记录。</p>
+        <p class="hint">可以点击确认按钮自动填入，也可以直接手动输入长度和籽粒数。保存记录会使用这里最终显示的数值。</p>
       </section>
 
       <section class="panel">
