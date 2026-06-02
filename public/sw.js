@@ -1,4 +1,4 @@
-const CACHE_NAME = 'rapeseed-pheno-tool-v13'
+const CACHE_NAME = 'rapeseed-pheno-tool-v14'
 const BASE_URL = new URL('./', self.registration.scope)
 const APP_SHELL = [BASE_URL.href, new URL('manifest.webmanifest', BASE_URL).href, new URL('favicon.svg', BASE_URL).href]
 

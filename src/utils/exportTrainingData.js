@@ -83,6 +83,20 @@ export function exportSiliqueTrainingData(records) {
         fileName: record.imageName,
         url: record.cloudUrl,
       },
+      images: {
+        silique: {
+          fileName: record.siliqueImageName || '',
+          hasImageData: Boolean(record.siliqueImageDataUrl),
+          width: record.siliqueImageWidth || null,
+          height: record.siliqueImageHeight || null,
+        },
+        seeds: {
+          fileName: record.seedImageName || record.imageName || '',
+          hasImageData: Boolean(record.seedImageDataUrl || record.imageDataUrl),
+          width: record.seedImageWidth || record.imageWidth || null,
+          height: record.seedImageHeight || record.imageHeight || null,
+        },
+      },
       metadata: {
         genotype: record.genotype,
         sampleId: record.sampleId,
@@ -99,6 +113,8 @@ export function exportSiliqueTrainingData(records) {
         seedPoints: record.seedPoints || [],
         autoSeedPoints: record.autoSeedPoints || [],
         deletedSeedPoints: record.deletedSeedPoints || [],
+        siliqueScale: record.siliqueScale || null,
+        siliqueLine: record.siliqueLine || null,
       },
       training: {
         quality: record.quality || 'unlabeled',
