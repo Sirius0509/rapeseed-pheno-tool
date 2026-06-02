@@ -228,6 +228,8 @@ async function detectSeedsWithService() {
       maxArea: maxSeedArea.value,
       minRoundness: minRoundness.value,
       minCircularity: 0.12,
+      useWatershed: true,
+      edgeMarginRatio: 0.03,
     }),
   })
   if (!response.ok) throw new Error(`Seed service failed: ${response.status}`)
@@ -235,9 +237,14 @@ async function detectSeedsWithService() {
   const points = Array.isArray(result.points) ? result.points : []
   state.detectedSeeds = points
   state.seedPoints = points
-  detectStatus.value = points.length
-    ? `后端识别生成 ${points.length} 个候选点，请人工增删确认。`
-    : '后端识别没有生成候选点。请检查框选区域、拍照质量或参数。'
+  if (points.length) {
+    const confidenceMap = { high: '高', medium: '中', low: '低' }
+    const confidence = confidenceMap[result.confidence] || '未知'
+    const reviewText = result.reviewCount ? `，疑似粘连/异常 ${result.reviewCount} 处` : ''
+    detectStatus.value = `后端分水岭识别生成 ${points.length} 个候选点，置信度 ${confidence}${reviewText}。请人工增删确认。`
+  } else {
+    detectStatus.value = '后端识别没有生成候选点。请检查框选区域、拍照质量或参数。'
+  }
   draw()
 }
 
