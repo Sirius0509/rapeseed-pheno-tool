@@ -69,7 +69,7 @@ export function exportSiliqueRecords(records) {
     '备注',
     '测量日期',
   ]
-  const rows = [
+  const detailRows = [
     siliqueHeaders,
     ...records.map((record) => [
       record.genotype,
@@ -86,7 +86,54 @@ export function exportSiliqueRecords(records) {
       record.measuredAt,
     ]),
   ]
+  const summaryRows = [...createSiliqueSummaryRows(records, true), [], ...createSiliqueSummaryRows(records, false)]
+  const rows = [...detailRows, [], ...summaryRows]
   downloadWorkbook(rows, `rapeseed-silique-${new Date().toISOString().slice(0, 10)}.xlsx`, '角果籽粒数据')
+}
+
+function createSiliqueSummaryRows(records, includeReplicate) {
+  const groups = new Map()
+  records.forEach((record) => {
+    const key = includeReplicate ? `${record.sampleId || ''}__${record.replicate || ''}` : record.sampleId || ''
+    if (!groups.has(key)) {
+      groups.set(key, {
+        sampleId: record.sampleId || '',
+        replicate: includeReplicate ? record.replicate || '' : '',
+        count: 0,
+        lengthSum: 0,
+        lengthN: 0,
+        seedSum: 0,
+        seedN: 0,
+      })
+    }
+    const group = groups.get(key)
+    group.count += 1
+    const length = Number(record.siliqueLengthMm)
+    const seeds = Number(record.seedCount)
+    if (Number.isFinite(length)) {
+      group.lengthSum += length
+      group.lengthN += 1
+    }
+    if (Number.isFinite(seeds)) {
+      group.seedSum += seeds
+      group.seedN += 1
+    }
+  })
+  return [
+    [includeReplicate ? '汇总：按样品编号和重复计算平均值' : '汇总：按样品编号计算平均值'],
+    includeReplicate ? ['样品编号', '重复', '记录数', '平均角果长度_mm', '平均籽粒数'] : ['样品编号', '记录数', '平均角果长度_mm', '平均籽粒数'],
+    ...Array.from(groups.values()).map((group) => [
+      ...(includeReplicate ? [group.sampleId, group.replicate] : [group.sampleId]),
+      group.count,
+      group.lengthN ? roundNumber(group.lengthSum / group.lengthN, 2) : '',
+      group.seedN ? roundNumber(group.seedSum / group.seedN, 2) : '',
+    ]),
+  ]
+}
+
+function roundNumber(value, digits) {
+  const factor = 10 ** digits
+  return Math.round(value * factor) / factor
 }
 
 function downloadWorkbook(rows, filename, sheetName = '油菜表型数据') {

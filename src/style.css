@@ -184,6 +184,18 @@ video {
   margin-bottom: 12px;
 }
 
+.panel-toggle {
+  width: 100%;
+  justify-content: space-between;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  padding: 0 0 12px;
+  margin-bottom: 12px;
+  background: transparent;
+  font-weight: 700;
+}
+
 .panel-heading {
   display: flex;
   justify-content: space-between;
@@ -347,6 +359,33 @@ canvas {
   display: grid;
   grid-template-columns: repeat(6, 1fr);
   border-top: 1px solid var(--line);
+}
+
+.quick-confirm {
+  border-top: 1px solid var(--line);
+  padding: 12px;
+  background: #fbfcfa;
+}
+
+.quick-values {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.quick-values label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.quick-values input {
+  min-height: 38px;
+}
+
+.compact-row {
+  margin-top: 10px;
 }
 
 .metric-grid div {
@@ -570,6 +609,7 @@ td {
   }
 
   .metric-grid,
+  .quick-values,
   .form-grid {
     grid-template-columns: 1fr;
   }

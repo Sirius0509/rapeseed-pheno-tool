@@ -29,9 +29,15 @@ const mode = ref('scale')
 const pendingPoints = ref([])
 const records = ref(loadSiliqueRecords())
 const editingRecordId = ref(null)
+const sampleTemplate = ref(localStorage.getItem('rapeseed-pheno-tool:silique-sample-template') || 'S001')
+const showRecordPanel = ref(true)
+const showDetectPanel = ref(false)
+const showTrainingPanel = ref(false)
+const showResultsPanel = ref(false)
 const editDraft = reactive({
   genotype: '',
   sampleId: '',
+  replicate: '',
   siliqueId: '',
   siliqueLengthMm: '',
   seedCount: '',
@@ -100,6 +106,9 @@ const confirmedMetrics = computed(() => {
   }
 })
 
+const sampleOptions = computed(() => buildSampleOptions(sampleTemplate.value, 120))
+const replicateOptions = computed(() => Array.from({ length: 10 }, (_, index) => String(index)))
+
 const trainingStats = computed(() => {
   const corrected = records.value.filter((record) => (record.seedPoints || []).length)
   const yoloReady = records.value.filter((record) => record.imageDataUrl && (record.seedPoints || []).length && record.quality !== 'exclude')
@@ -113,6 +122,26 @@ const trainingStats = computed(() => {
     yoloReady: yoloReady.length,
   }
 })
+
+function applySampleTemplate() {
+  localStorage.setItem('rapeseed-pheno-tool:silique-sample-template', sampleTemplate.value.trim())
+  const options = sampleOptions.value
+  if (options.length) form.sampleId = options[0]
+}
+
+function buildSampleOptions(template, count) {
+  const value = String(template || '').trim()
+  if (!value) return []
+  const match = value.match(/^(.*?)(\d+)(\D*)$/)
+  if (!match) return [value]
+  const [, prefix, numberPart, suffix] = match
+  const start = Number(numberPart)
+  const width = numberPart.length
+  return Array.from({ length: count }, (_, index) => `${prefix}${String(start + index).padStart(width, '0')}${suffix}`)
+}
+
+if (!form.sampleId && sampleOptions.value.length) form.sampleId = sampleOptions.value[0]
+if (!form.replicate) form.replicate = '0'
 
 async function startCamera() {
   if (!navigator.mediaDevices?.getUserMedia) return
@@ -663,6 +692,7 @@ function startEditRecord(record) {
   editingRecordId.value = record.id
   editDraft.genotype = record.genotype || ''
   editDraft.sampleId = record.sampleId || ''
+  editDraft.replicate = record.replicate || ''
   editDraft.siliqueId = record.siliqueId || ''
   editDraft.siliqueLengthMm = record.siliqueLengthMm ?? ''
   editDraft.seedCount = record.seedCount ?? ''
@@ -674,6 +704,7 @@ function cancelEditRecord() {
   editingRecordId.value = null
   editDraft.genotype = ''
   editDraft.sampleId = ''
+  editDraft.replicate = ''
   editDraft.siliqueId = ''
   editDraft.siliqueLengthMm = ''
   editDraft.seedCount = ''
@@ -691,6 +722,7 @@ function saveEditRecord(recordId) {
       ...record,
       genotype: editDraft.genotype.trim(),
       sampleId: editDraft.sampleId.trim(),
+      replicate: editDraft.replicate,
       siliqueId: editDraft.siliqueId.trim(),
       quality: editDraft.quality,
       notes: editDraft.notes.trim(),
@@ -865,6 +897,28 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
+      <div class="quick-confirm">
+        <div class="quick-values">
+          <label>保存长度 mm<input v-model.number="state.manualSiliqueLengthMm" type="number" min="0" step="0.01" placeholder="手动输入" /></label>
+          <label>保存籽粒数<input v-model.number="state.manualSeedCount" type="number" min="0" step="1" placeholder="手动输入" /></label>
+          <label>粒数/cm<input :value="confirmedMetrics.seedsPerCm || ''" readonly placeholder="自动计算" /></label>
+        </div>
+        <div class="button-row compact-row">
+          <button type="button" :disabled="!metrics.siliqueLengthMm" @click="confirmSiliqueLength">
+            <Save :size="18" />
+            确认长度
+          </button>
+          <button type="button" :disabled="!image" @click="confirmSeedCount">
+            <Save :size="18" />
+            确认籽粒
+          </button>
+          <button class="primary" type="button" :disabled="!form.sampleId || !form.siliqueId || confirmedMetrics.siliqueLengthMm === '' || confirmedMetrics.seedCount === ''" @click="saveRecord">
+            <Save :size="18" />
+            保存
+          </button>
+        </div>
+      </div>
+
       <div class="metric-grid">
         <div><span>比例尺</span><strong>{{ metrics.mmPerPixel || '-' }} mm/px</strong></div>
         <div><span>角果长度</span><strong>{{ metrics.siliqueLengthMm || '-' }} mm</strong></div>
@@ -877,11 +931,26 @@ onBeforeUnmount(() => {
 
     <aside class="side-area">
       <section class="panel">
-        <div class="panel-title">角果记录</div>
+        <button class="panel-toggle" type="button" @click="showRecordPanel = !showRecordPanel">
+          <span>角果记录</span>
+          <span>{{ showRecordPanel ? '收起' : '展开' }}</span>
+        </button>
+        <div v-show="showRecordPanel">
         <div class="form-grid">
+          <label class="wide">编号示范<input v-model="sampleTemplate" placeholder="例如 G0001" @change="applySampleTemplate" /></label>
+          <label class="wide">
+            样品编号
+            <select v-model="form.sampleId">
+              <option v-for="sample in sampleOptions" :key="sample" :value="sample">{{ sample }}</option>
+            </select>
+          </label>
           <label>材料编号<input v-model="form.genotype" placeholder="例如 G0001" /></label>
-          <label>样品编号<input v-model="form.sampleId" placeholder="例如 P01" /></label>
-          <label>重复<input v-model="form.replicate" placeholder="重复编号" /></label>
+          <label>
+            重复
+            <select v-model="form.replicate">
+              <option v-for="replicate in replicateOptions" :key="replicate" :value="replicate">{{ replicate }}</option>
+            </select>
+          </label>
           <label>角果编号<input v-model="form.siliqueId" placeholder="S001" /></label>
           <label>
             图片质量
@@ -898,19 +967,20 @@ onBeforeUnmount(() => {
           <label class="wide">备注<textarea v-model="form.notes" rows="3"></textarea></label>
         </div>
         <div class="button-row">
-          <button class="primary" type="button" :disabled="!form.sampleId || !form.siliqueId || confirmedMetrics.siliqueLengthMm === '' || confirmedMetrics.seedCount === ''" @click="saveRecord">
-            <Save :size="18" />
-            保存记录
-          </button>
           <button type="button" :disabled="!image" @click="exportAnnotatedImage">
             <Download :size="18" />
             标注图
           </button>
         </div>
+        </div>
       </section>
 
       <section class="panel">
-        <div class="panel-title">确认数据</div>
+        <button class="panel-toggle" type="button" @click="showRecordPanel = !showRecordPanel">
+          <span>确认数据</span>
+          <span>{{ showRecordPanel ? '收起' : '展开' }}</span>
+        </button>
+        <div v-show="showRecordPanel">
         <div class="form-grid">
           <label>保存长度 mm<input v-model.number="state.manualSiliqueLengthMm" type="number" min="0" step="0.01" placeholder="可自动确认或手动输入" /></label>
           <label>保存籽粒数<input v-model.number="state.manualSeedCount" type="number" min="0" step="1" placeholder="可自动确认或手动输入" /></label>
@@ -927,10 +997,15 @@ onBeforeUnmount(() => {
           </button>
         </div>
         <p class="hint">可以点击确认按钮自动填入，也可以直接手动输入长度和籽粒数。保存记录会使用这里最终显示的数值。</p>
+        </div>
       </section>
 
       <section class="panel">
-        <div class="panel-title">自动识别参数</div>
+        <button class="panel-toggle" type="button" @click="showDetectPanel = !showDetectPanel">
+          <span>自动识别参数</span>
+          <span>{{ showDetectPanel ? '收起' : '展开' }}</span>
+        </button>
+        <div v-show="showDetectPanel">
         <label class="range-field">
           识别服务地址
           <input v-model="serviceUrl" placeholder="例如 https://your-seed-api.example.com；留空用浏览器算法" />
@@ -949,10 +1024,15 @@ onBeforeUnmount(() => {
         <label class="range-field">圆整度 {{ minRoundness }}<input v-model.number="minRoundness" type="range" min="0.05" max="0.9" step="0.05" /></label>
         <p class="hint status">{{ detectStatus }}</p>
         <p class="hint">先点“框选籽粒区”框住籽粒，再生成候选点。候选点不是最终结果，需要用“补籽粒/删籽粒”人工确认。</p>
+        </div>
       </section>
 
       <section class="panel">
-        <div class="panel-title">训练数据</div>
+        <button class="panel-toggle" type="button" @click="showTrainingPanel = !showTrainingPanel">
+          <span>训练数据</span>
+          <span>{{ showTrainingPanel ? '收起' : '展开' }}</span>
+        </button>
+        <div v-show="showTrainingPanel">
         <div class="mini-stats">
           <div><span>已校正图片</span><strong>{{ trainingStats.correctedImages }}</strong></div>
           <div><span>籽粒标注</span><strong>{{ trainingStats.seedAnnotations }}</strong></div>
@@ -970,6 +1050,7 @@ onBeforeUnmount(() => {
         <p class="hint status">{{ trainStatus }}</p>
         <pre v-if="trainJob?.logTail" class="log-box">{{ trainJob.logTail }}</pre>
         <p v-if="trainJob?.metrics?.bestWeights" class="hint">最佳模型：{{ trainJob.metrics.bestWeights }}</p>
+        </div>
       </section>
     </aside>
   </section>
@@ -981,13 +1062,14 @@ onBeforeUnmount(() => {
         <p>{{ records.length }} 条记录</p>
       </div>
       <div class="button-row">
+        <button type="button" @click="showResultsPanel = !showResultsPanel">{{ showResultsPanel ? '收起结果' : '查看结果' }}</button>
         <button type="button" :disabled="!records.length" @click="exportSiliqueRecords(records)">导出 Excel</button>
         <button type="button" :disabled="!records.length" @click="exportSiliqueTrainingData(records)">导出训练数据</button>
         <button type="button" :disabled="!trainingStats.yoloReady" @click="exportSiliqueYoloDataset(records)">导出 YOLO 数据集</button>
         <button class="ghost" type="button" :disabled="!records.length" @click="clearRecords">清空</button>
       </div>
     </div>
-    <div class="table-wrap">
+    <div v-show="showResultsPanel" class="table-wrap">
       <table>
         <thead>
           <tr>
