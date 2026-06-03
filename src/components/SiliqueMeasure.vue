@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   Camera,
   Download,
@@ -17,7 +17,7 @@ import {
 import { distance, round } from '../utils/geometry'
 import { exportSiliqueRecords } from '../utils/exportExcel'
 import { exportSiliqueTrainingData, exportSiliqueYoloDataset } from '../utils/exportTrainingData'
-import { loadSiliqueRecords, saveSiliqueRecords } from '../utils/storage'
+import { deleteSiliqueRecordIndexed, loadSiliqueRecords, loadSiliqueRecordsFull, saveSiliqueRecords } from '../utils/storage'
 
 const canvas = ref(null)
 const video = ref(null)
@@ -66,6 +66,8 @@ const detecting = ref(false)
 const training = ref(false)
 const trainStatus = ref('本地训练需要先运行后端服务，并填写识别服务地址。')
 const trainJob = ref(null)
+const syncStatus = ref('本地保存已启用。填写电脑后端地址后，手机和电脑可同步记录。')
+const syncing = ref(false)
 let trainPollTimer = null
 const state = reactive({
   mmPerPixel: null,
@@ -85,6 +87,11 @@ const state = reactive({
 })
 
 watch([threshold, minSeedArea, maxSeedArea, minRoundness, foregroundMode], saveDetectParams)
+
+onMounted(async () => {
+  const fullRecords = await loadSiliqueRecordsFull()
+  if (fullRecords.length > records.value.length) records.value = fullRecords
+})
 
 const metrics = computed(() => {
   const lengthPx = state.siliqueLine?.pixels || 0
@@ -470,6 +477,38 @@ async function startYoloTraining() {
   }
 }
 
+async function startStoredYoloTraining() {
+  if (!serviceUrl.value.trim()) return
+  training.value = true
+  trainStatus.value = '正在用后端共享记录提交训练任务...'
+  trainJob.value = null
+  clearTrainingPoll()
+
+  try {
+    localStorage.setItem('rapeseed-pheno-tool:seed-service-url', serviceUrl.value.trim())
+    await pushRecordsToServer(false)
+    const endpoint = `${serviceUrl.value.trim().replace(/\/$/, '')}/api/train-yolo-stored`
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'yolo11n.pt',
+        epochs: 50,
+        imgsz: 1024,
+        batch: 4,
+      }),
+    })
+    const result = await response.json()
+    if (!response.ok || !result.ok) throw new Error(result.error || `训练服务失败: ${response.status}`)
+    trainJob.value = result.job
+    updateTrainStatus(result.job)
+    trainPollTimer = window.setInterval(() => pollYoloTraining(result.job.id), 3000)
+  } catch (error) {
+    training.value = false
+    trainStatus.value = `后端共享记录训练失败：${error.message}`
+  }
+}
+
 async function pollYoloTraining(jobId) {
   try {
     const endpoint = `${serviceUrl.value.trim().replace(/\/$/, '')}/api/train-yolo/${jobId}`
@@ -487,6 +526,90 @@ async function pollYoloTraining(jobId) {
     trainStatus.value = `训练状态查询失败：${error.message}`
     clearTrainingPoll()
   }
+}
+
+async function pullRecordsFromServer() {
+  if (!serviceUrl.value.trim()) return
+  syncing.value = true
+  try {
+    localStorage.setItem('rapeseed-pheno-tool:seed-service-url', serviceUrl.value.trim())
+    const endpoint = `${serviceUrl.value.trim().replace(/\/$/, '')}/api/silique-records`
+    const response = await fetch(endpoint)
+    const result = await response.json()
+    if (!response.ok || !result.ok) throw new Error(result.error || `同步失败: ${response.status}`)
+    records.value = mergeRecordLists(records.value, result.records || [])
+    await saveSiliqueRecords(records.value)
+    syncStatus.value = `已从电脑后端同步 ${result.records?.length || 0} 条记录，本机当前 ${records.value.length} 条。`
+  } catch (error) {
+    syncStatus.value = `从后端同步失败：${error.message}`
+  } finally {
+    syncing.value = false
+  }
+}
+
+async function pushRecordsToServer(showMessage = true) {
+  if (!serviceUrl.value.trim()) return
+  syncing.value = true
+  try {
+    localStorage.setItem('rapeseed-pheno-tool:seed-service-url', serviceUrl.value.trim())
+    const endpoint = `${serviceUrl.value.trim().replace(/\/$/, '')}/api/silique-records`
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ records: records.value }),
+    })
+    const result = await response.json()
+    if (!response.ok || !result.ok) throw new Error(result.error || `同步失败: ${response.status}`)
+    records.value = mergeRecordLists(records.value, result.records || [])
+    await saveSiliqueRecords(records.value)
+    if (showMessage) syncStatus.value = `已同步到电脑后端：${result.count || records.value.length} 条记录。`
+  } catch (error) {
+    syncStatus.value = `同步到后端失败：${error.message}`
+  } finally {
+    syncing.value = false
+  }
+}
+
+async function syncRecordDeleteToServer(recordId) {
+  if (!serviceUrl.value.trim()) return
+  try {
+    const endpoint = `${serviceUrl.value.trim().replace(/\/$/, '')}/api/silique-records/${encodeURIComponent(recordId)}`
+    await fetch(endpoint, { method: 'DELETE' })
+  } catch {
+    syncStatus.value = '本机已删除，但后端删除失败。请稍后点“同步到电脑”。'
+  }
+}
+
+async function clearServerRecords() {
+  if (!serviceUrl.value.trim()) return
+  syncing.value = true
+  try {
+    const endpoint = `${serviceUrl.value.trim().replace(/\/$/, '')}/api/silique-records`
+    const response = await fetch(endpoint, { method: 'DELETE' })
+    const result = await response.json()
+    if (!response.ok || !result.ok) throw new Error(result.error || `清空失败: ${response.status}`)
+    syncStatus.value = '电脑后端共享记录已清空。'
+  } catch (error) {
+    syncStatus.value = `清空电脑后端失败：${error.message}`
+  } finally {
+    syncing.value = false
+  }
+}
+
+function mergeRecordLists(localRecords, remoteRecords) {
+  const merged = new Map()
+  ;[...remoteRecords, ...localRecords].forEach((record) => {
+    if (!record?.id) return
+    const existing = merged.get(record.id)
+    if (!existing) {
+      merged.set(record.id, record)
+      return
+    }
+    const currentTime = new Date(record.editedAt || record.createdAt || record.measuredAt || 0).getTime()
+    const existingTime = new Date(existing.editedAt || existing.createdAt || existing.measuredAt || 0).getTime()
+    merged.set(record.id, currentTime >= existingTime ? record : existing)
+  })
+  return [...merged.values()].sort((a, b) => String(b.createdAt || b.measuredAt || '').localeCompare(String(a.createdAt || a.measuredAt || '')))
 }
 
 function updateTrainStatus(job) {
@@ -670,7 +793,7 @@ function clearSeeds() {
   draw()
 }
 
-function saveRecord() {
+async function saveRecord() {
   if (!form.sampleId.trim() || !form.siliqueId.trim()) return
   const siliqueLengthMm = numberOrEmpty(state.manualSiliqueLengthMm)
   const seedCount = numberOrEmpty(state.manualSeedCount)
@@ -715,9 +838,12 @@ function saveRecord() {
     manualSiliqueLengthMm: siliqueLengthMm,
     manualSeedCount: seedCount,
     measuredAt: new Date().toISOString().slice(0, 10),
+    createdAt: new Date().toISOString(),
   }
   records.value = [record, ...records.value]
-  saveSiliqueRecords(records.value)
+  await saveSiliqueRecords(records.value)
+  await pushRecordsToServer(false)
+  syncStatus.value = serviceUrl.value.trim() ? '记录已保存到本机，并已尝试同步到电脑后端。' : '记录已保存到本机。填写电脑后端地址后可同步。'
   incrementSiliqueId()
   resetMeasurements()
   draw()
@@ -746,15 +872,18 @@ function incrementSiliqueId() {
   form.siliqueId = `${match[1]}${next}`
 }
 
-function clearRecords() {
+async function clearRecords() {
   records.value = []
-  saveSiliqueRecords(records.value)
+  await saveSiliqueRecords(records.value)
+  await clearServerRecords()
   cancelEditRecord()
 }
 
-function deleteRecord(recordId) {
+async function deleteRecord(recordId) {
   records.value = records.value.filter((record) => record.id !== recordId)
-  saveSiliqueRecords(records.value)
+  await saveSiliqueRecords(records.value)
+  await deleteSiliqueRecordIndexed(recordId)
+  await syncRecordDeleteToServer(recordId)
   if (editingRecordId.value === recordId) cancelEditRecord()
 }
 
@@ -782,7 +911,7 @@ function cancelEditRecord() {
   editDraft.notes = ''
 }
 
-function saveEditRecord(recordId) {
+async function saveEditRecord(recordId) {
   const siliqueLengthMm = numberOrEmpty(editDraft.siliqueLengthMm)
   const seedCount = numberOrEmpty(editDraft.seedCount)
   if (siliqueLengthMm === '' || seedCount === '') return
@@ -804,7 +933,9 @@ function saveEditRecord(recordId) {
       editedAt: new Date().toISOString(),
     }
   })
-  saveSiliqueRecords(records.value)
+  await saveSiliqueRecords(records.value)
+  await pushRecordsToServer(false)
+  syncStatus.value = serviceUrl.value.trim() ? '修改已保存并已尝试同步到电脑后端。' : '修改已保存到本机。'
   cancelEditRecord()
 }
 
@@ -1084,6 +1215,15 @@ onBeforeUnmount(() => {
           识别服务地址
           <input v-model="serviceUrl" placeholder="例如 https://your-seed-api.example.com；留空用浏览器算法" />
         </label>
+        <div class="button-row compact-row">
+          <button type="button" :disabled="!serviceUrl.trim() || syncing" @click="pullRecordsFromServer">
+            {{ syncing ? '同步中' : '从电脑同步' }}
+          </button>
+          <button type="button" :disabled="!serviceUrl.trim() || syncing || !records.length" @click="pushRecordsToServer">
+            同步到电脑
+          </button>
+        </div>
+        <p class="hint status">{{ syncStatus }}</p>
         <label class="range-field">
           籽粒颜色
           <select v-model="foregroundMode">
@@ -1124,7 +1264,11 @@ onBeforeUnmount(() => {
         <div class="button-row">
           <button class="primary" type="button" :disabled="!serviceUrl.trim() || !trainingStats.yoloReady || training" @click="startYoloTraining">
             <Play :size="18" />
-            {{ training ? '训练中' : '开始训练模型' }}
+            {{ training ? '训练中' : '用本机记录训练' }}
+          </button>
+          <button type="button" :disabled="!serviceUrl.trim() || training" @click="startStoredYoloTraining">
+            <Play :size="18" />
+            用电脑同步数据训练
           </button>
         </div>
         <p class="hint status">{{ trainStatus }}</p>

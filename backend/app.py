@@ -22,8 +22,11 @@ from pydantic import BaseModel, Field
 app = FastAPI(title="Rapeseed seed candidate service")
 BASE_DIR = Path(__file__).resolve().parent
 RUNS_DIR = BASE_DIR / "runs"
+DATA_DIR = BASE_DIR / "data"
+SILIQUE_RECORDS_PATH = DATA_DIR / "silique_records.json"
 TRAIN_JOBS = {}
 TRAIN_LOCK = threading.Lock()
+RECORDS_LOCK = threading.Lock()
 
 app.add_middleware(
     CORSMiddleware,
@@ -76,6 +79,19 @@ class TrainingRecord(BaseModel):
 
 class TrainRequest(BaseModel):
     records: list[TrainingRecord] = Field(default_factory=list)
+    model: str = "yolo11n.pt"
+    epochs: int = Field(default=50, ge=1, le=300)
+    imgsz: int = Field(default=1024, ge=320, le=2048)
+    batch: int = Field(default=4, ge=1, le=64)
+    trainRatio: float = Field(default=0.8, ge=0.5, le=0.95)
+    dryRun: bool = False
+
+
+class StoredRecordsRequest(BaseModel):
+    records: list[dict] = Field(default_factory=list)
+
+
+class TrainStoredRequest(BaseModel):
     model: str = "yolo11n.pt"
     epochs: int = Field(default=50, ge=1, le=300)
     imgsz: int = Field(default=1024, ge=320, le=2048)
@@ -464,6 +480,59 @@ def health():
     }
 
 
+@app.get("/api/silique-records")
+def get_silique_records():
+    return {"ok": True, "records": load_stored_records()}
+
+
+@app.put("/api/silique-records")
+def replace_silique_records(payload: StoredRecordsRequest):
+    records = merge_records(load_stored_records(), payload.records)
+    save_stored_records(records)
+    return {"ok": True, "records": records, "count": len(records)}
+
+
+@app.post("/api/silique-records")
+def upsert_silique_records(payload: StoredRecordsRequest):
+    records = merge_records(load_stored_records(), payload.records)
+    save_stored_records(records)
+    return {"ok": True, "records": records, "count": len(records)}
+
+
+@app.delete("/api/silique-records/{record_id}")
+def delete_silique_record(record_id: str):
+    records = [record for record in load_stored_records() if str(record.get("id")) != record_id]
+    save_stored_records(records)
+    return {"ok": True, "records": records, "count": len(records)}
+
+
+@app.delete("/api/silique-records")
+def clear_silique_records():
+    save_stored_records([])
+    return {"ok": True, "records": [], "count": 0}
+
+
+@app.post("/api/train-yolo-stored")
+def train_yolo_stored(payload: TrainStoredRequest):
+    records = []
+    for item in load_stored_records():
+        try:
+            records.append(TrainingRecord(**item))
+        except Exception:
+            continue
+    return train_yolo(
+        TrainRequest(
+            records=records,
+            model=payload.model,
+            epochs=payload.epochs,
+            imgsz=payload.imgsz,
+            batch=payload.batch,
+            trainRatio=payload.trainRatio,
+            dryRun=payload.dryRun,
+        )
+    )
+
+
 @app.post("/api/seed-candidates")
 def seed_candidates(payload: SeedCandidateRequest):
     img = decode_data_url(payload.imageDataUrl)
@@ -666,6 +735,37 @@ def collect_training_metrics(run_dir: Path) -> dict:
             values = [item.strip() for item in lines[-1].split(",")]
             metrics["lastEpoch"] = dict(zip(headers, values))
     return metrics
+
+
+def load_stored_records() -> list[dict]:
+    with RECORDS_LOCK:
+        if not SILIQUE_RECORDS_PATH.exists():
+            return []
+        try:
+            data = json.loads(SILIQUE_RECORDS_PATH.read_text(encoding="utf-8"))
+            if not isinstance(data, list):
+                return []
+            return data
+        except Exception:
+            return []
+
+
+def save_stored_records(records: list[dict]):
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with RECORDS_LOCK:
+        SILIQUE_RECORDS_PATH.write_text(json.dumps(records, ensure_ascii=False), encoding="utf-8")
+
+
+def merge_records(existing: list[dict], incoming: list[dict]) -> list[dict]:
+    merged = {str(record.get("id")): record for record in existing if record.get("id")}
+    for record in incoming:
+        record_id = str(record.get("id") or uuid.uuid4())
+        merged[record_id] = {**record, "id": record_id, "syncedAt": datetime.now().isoformat(timespec="seconds")}
+    return sorted(
+        merged.values(),
+        key=lambda record: str(record.get("createdAt") or record.get("measuredAt") or record.get("syncedAt") or ""),
+        reverse=True,
+    )
 
 
 def safe_name(value: str) -> str:

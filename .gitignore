@@ -14,6 +14,10 @@ dist-ssr
 .venv
 backend/.venv
 backend/runs
+backend/data
+backend/datasets
+backend/yolo*.pt
+runs
 
 # Editor directories and files
 .vscode/*

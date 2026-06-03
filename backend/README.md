@@ -16,12 +16,20 @@ API:
 
 ```text
 POST /api/seed-candidates
+GET /api/silique-records
+POST /api/silique-records
+PUT /api/silique-records
+DELETE /api/silique-records/{record_id}
+DELETE /api/silique-records
 POST /api/train-yolo
+POST /api/train-yolo-stored
 GET /api/train-yolo/{job_id}
 ```
 
 The frontend sends a canvas snapshot and optional seed ROI. The service returns candidate points in the same coordinate space as the submitted image, plus confidence, median seed area, review count, and touching-seed warnings.
 
 For training, the frontend sends saved records with original image data and corrected seed points. The backend writes a YOLO dataset under `backend/runs/{job_id}/dataset`, starts ultralytics training, and stores outputs under `backend/runs/{job_id}/train`.
+
+For phone/computer sync, the frontend can store corrected silique records in `backend/data/silique_records.json`. `POST /api/train-yolo-stored` starts training from those shared backend records, so a phone can collect data while the computer keeps the shared training pool.
 
 For GitHub Pages production use, deploy this backend behind HTTPS and set the frontend "识别服务地址" to that URL.
