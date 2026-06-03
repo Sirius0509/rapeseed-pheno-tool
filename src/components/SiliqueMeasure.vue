@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import {
   Camera,
   Download,
@@ -54,11 +54,12 @@ const form = reactive({
   cloudUrl: '',
 })
 const scaleLengthMm = ref(10)
-const threshold = ref(65)
-const minSeedArea = ref(18)
-const maxSeedArea = ref(1400)
-const minRoundness = ref(0.25)
-const foregroundMode = ref('auto')
+const savedDetectParams = loadDetectParams()
+const threshold = ref(savedDetectParams.threshold)
+const minSeedArea = ref(savedDetectParams.minSeedArea)
+const maxSeedArea = ref(savedDetectParams.maxSeedArea)
+const minRoundness = ref(savedDetectParams.minRoundness)
+const foregroundMode = ref(savedDetectParams.foregroundMode)
 const serviceUrl = ref(localStorage.getItem('rapeseed-pheno-tool:seed-service-url') || '')
 const detectStatus = ref('先框选籽粒区域，再生成候选点。')
 const detecting = ref(false)
@@ -82,6 +83,8 @@ const state = reactive({
   manualSeedCount: '',
   previewMask: false,
 })
+
+watch([threshold, minSeedArea, maxSeedArea, minRoundness, foregroundMode], saveDetectParams)
 
 const metrics = computed(() => {
   const lengthPx = state.siliqueLine?.pixels || 0
@@ -142,6 +145,34 @@ function buildSampleOptions(template, count) {
 
 if (!form.sampleId && sampleOptions.value.length) form.sampleId = sampleOptions.value[0]
 if (!form.replicate) form.replicate = '0'
+
+function loadDetectParams() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('rapeseed-pheno-tool:seed-detect-params') || '{}')
+    return {
+      threshold: Number(saved.threshold) || 73,
+      minSeedArea: Number(saved.minSeedArea) || 18,
+      maxSeedArea: Number(saved.maxSeedArea) || 1400,
+      minRoundness: Number(saved.minRoundness) || 0.25,
+      foregroundMode: ['auto', 'light', 'dark'].includes(saved.foregroundMode) ? saved.foregroundMode : 'dark',
+    }
+  } catch {
+    return { threshold: 73, minSeedArea: 18, maxSeedArea: 1400, minRoundness: 0.25, foregroundMode: 'dark' }
+  }
+}
+
+function saveDetectParams() {
+  localStorage.setItem(
+    'rapeseed-pheno-tool:seed-detect-params',
+    JSON.stringify({
+      threshold: threshold.value,
+      minSeedArea: minSeedArea.value,
+      maxSeedArea: maxSeedArea.value,
+      minRoundness: minRoundness.value,
+      foregroundMode: foregroundMode.value,
+    }),
+  )
+}
 
 async function startCamera() {
   if (!navigator.mediaDevices?.getUserMedia) return
@@ -278,6 +309,45 @@ function removeNearestSeed(point) {
     state.confirmedSeedCount = null
     state.confirmedSeedsPerCm = null
   }
+}
+
+function recommendSeedParams() {
+  if (!canvas.value || !image.value) return
+  const ctx = canvas.value.getContext('2d', { willReadFrequently: true })
+  const bounds = state.seedRoi
+    ? {
+        x: Math.max(0, Math.floor(state.seedRoi.x)),
+        y: Math.max(0, Math.floor(state.seedRoi.y)),
+        width: Math.max(1, Math.floor(state.seedRoi.width)),
+        height: Math.max(1, Math.floor(state.seedRoi.height)),
+      }
+    : { x: 0, y: 0, width: canvas.value.width, height: canvas.value.height }
+  const img = ctx.getImageData(bounds.x, bounds.y, bounds.width, bounds.height)
+  const brightness = []
+  for (let i = 0; i < img.data.length; i += 4) {
+    const r = img.data[i]
+    const g = img.data[i + 1]
+    const b = img.data[i + 2]
+    brightness.push((r + g + b) / 3)
+  }
+  brightness.sort((a, b) => a - b)
+  if (!brightness.length) return
+  const p10 = percentile(brightness, 0.1)
+  const p20 = percentile(brightness, 0.2)
+  const median = percentile(brightness, 0.5)
+  foregroundMode.value = 'dark'
+  threshold.value = Math.round(Math.max(45, Math.min(115, Math.min(p20, p10 + 18))))
+  if (median - threshold.value < 35) threshold.value = Math.round(Math.max(45, Math.min(115, p10 + 12)))
+  minSeedArea.value = Math.max(8, minSeedArea.value)
+  maxSeedArea.value = Math.max(900, maxSeedArea.value)
+  minRoundness.value = Math.min(0.3, Math.max(0.18, minRoundness.value))
+  saveDetectParams()
+  detectStatus.value = `已推荐参数：籽粒颜色=比背景暗，亮度阈值=${threshold.value}。如仍漏检粘连籽粒，请用“补籽粒”人工加点。`
+}
+
+function percentile(sortedValues, ratio) {
+  const index = Math.max(0, Math.min(sortedValues.length - 1, Math.floor(sortedValues.length * ratio)))
+  return sortedValues[index]
 }
 
 async function autoDetectSeeds() {
@@ -883,6 +953,10 @@ onBeforeUnmount(() => {
           <Play :size="17" />
           {{ detecting ? '分析中' : '生成候选点' }}
         </button>
+        <button type="button" :disabled="!image" @click="recommendSeedParams">
+          <Ruler :size="17" />
+          推荐参数
+        </button>
         <button type="button" @click="clearSeeds">
           <Trash2 :size="17" />
           清空籽粒
@@ -1022,8 +1096,14 @@ onBeforeUnmount(() => {
         <label class="range-field">最小面积 {{ minSeedArea }}<input v-model.number="minSeedArea" type="range" min="2" max="300" /></label>
         <label class="range-field">最大面积 {{ maxSeedArea }}<input v-model.number="maxSeedArea" type="range" min="100" max="5000" /></label>
         <label class="range-field">圆整度 {{ minRoundness }}<input v-model.number="minRoundness" type="range" min="0.05" max="0.9" step="0.05" /></label>
+        <div class="button-row compact-row">
+          <button type="button" :disabled="!image" @click="recommendSeedParams">
+            <Ruler :size="18" />
+            根据当前照片推荐参数
+          </button>
+        </div>
         <p class="hint status">{{ detectStatus }}</p>
-        <p class="hint">先点“框选籽粒区”框住籽粒，再生成候选点。候选点不是最终结果，需要用“补籽粒/删籽粒”人工确认。</p>
+        <p class="hint">先点“框选籽粒区”框住籽粒，再生成候选点。参数会自动保存到本机；候选点不是最终结果，需要用“补籽粒/删籽粒”人工确认。</p>
         </div>
       </section>
 
