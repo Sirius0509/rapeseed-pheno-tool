@@ -77,6 +77,11 @@ button.ghost {
   background: transparent;
 }
 
+button.danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
 input,
 textarea,
 select {
@@ -487,6 +492,25 @@ th {
 
 td {
   font-size: 14px;
+}
+
+.table-input {
+  min-width: 92px;
+  min-height: 34px;
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
+.table-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+
+.table-actions button {
+  min-height: 32px;
+  padding: 5px 8px;
+  font-size: 13px;
 }
 
 @media (max-width: 1080px) {

@@ -28,6 +28,16 @@ const stream = ref(null)
 const mode = ref('scale')
 const pendingPoints = ref([])
 const records = ref(loadSiliqueRecords())
+const editingRecordId = ref(null)
+const editDraft = reactive({
+  genotype: '',
+  sampleId: '',
+  siliqueId: '',
+  siliqueLengthMm: '',
+  seedCount: '',
+  quality: 'good',
+  notes: '',
+})
 const form = reactive({
   genotype: '',
   sampleId: '',
@@ -640,6 +650,60 @@ function incrementSiliqueId() {
 function clearRecords() {
   records.value = []
   saveSiliqueRecords(records.value)
+  cancelEditRecord()
+}
+
+function deleteRecord(recordId) {
+  records.value = records.value.filter((record) => record.id !== recordId)
+  saveSiliqueRecords(records.value)
+  if (editingRecordId.value === recordId) cancelEditRecord()
+}
+
+function startEditRecord(record) {
+  editingRecordId.value = record.id
+  editDraft.genotype = record.genotype || ''
+  editDraft.sampleId = record.sampleId || ''
+  editDraft.siliqueId = record.siliqueId || ''
+  editDraft.siliqueLengthMm = record.siliqueLengthMm ?? ''
+  editDraft.seedCount = record.seedCount ?? ''
+  editDraft.quality = record.quality || 'good'
+  editDraft.notes = record.notes || ''
+}
+
+function cancelEditRecord() {
+  editingRecordId.value = null
+  editDraft.genotype = ''
+  editDraft.sampleId = ''
+  editDraft.siliqueId = ''
+  editDraft.siliqueLengthMm = ''
+  editDraft.seedCount = ''
+  editDraft.quality = 'good'
+  editDraft.notes = ''
+}
+
+function saveEditRecord(recordId) {
+  const siliqueLengthMm = numberOrEmpty(editDraft.siliqueLengthMm)
+  const seedCount = numberOrEmpty(editDraft.seedCount)
+  if (siliqueLengthMm === '' || seedCount === '') return
+  records.value = records.value.map((record) => {
+    if (record.id !== recordId) return record
+    return {
+      ...record,
+      genotype: editDraft.genotype.trim(),
+      sampleId: editDraft.sampleId.trim(),
+      siliqueId: editDraft.siliqueId.trim(),
+      quality: editDraft.quality,
+      notes: editDraft.notes.trim(),
+      siliqueLengthMm,
+      seedCount,
+      seedsPerCm: siliqueLengthMm ? round(seedCount / (siliqueLengthMm / 10), 2) : '',
+      manualSiliqueLengthMm: siliqueLengthMm,
+      manualSeedCount: seedCount,
+      editedAt: new Date().toISOString(),
+    }
+  })
+  saveSiliqueRecords(records.value)
+  cancelEditRecord()
 }
 
 function exportAnnotatedImage() {
@@ -936,20 +1000,48 @@ onBeforeUnmount(() => {
             <th>质量</th>
             <th>方式</th>
             <th>日期</th>
+            <th>操作</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-if="!records.length"><td colspan="9">暂无记录</td></tr>
+          <tr v-if="!records.length"><td colspan="10">暂无记录</td></tr>
           <tr v-for="record in records" :key="record.id">
-            <td>{{ record.genotype }}</td>
-            <td>{{ record.sampleId }}</td>
-            <td>{{ record.siliqueId }}</td>
-            <td>{{ record.siliqueLengthMm }}</td>
-            <td>{{ record.seedCount }}</td>
-            <td>{{ record.seedsPerCm }}</td>
-            <td>{{ record.quality || '-' }}</td>
+            <td v-if="editingRecordId === record.id"><input v-model="editDraft.genotype" class="table-input" /></td>
+            <td v-else>{{ record.genotype }}</td>
+            <td v-if="editingRecordId === record.id"><input v-model="editDraft.sampleId" class="table-input" /></td>
+            <td v-else>{{ record.sampleId }}</td>
+            <td v-if="editingRecordId === record.id"><input v-model="editDraft.siliqueId" class="table-input" /></td>
+            <td v-else>{{ record.siliqueId }}</td>
+            <td v-if="editingRecordId === record.id"><input v-model.number="editDraft.siliqueLengthMm" class="table-input" type="number" min="0" step="0.01" /></td>
+            <td v-else>{{ record.siliqueLengthMm }}</td>
+            <td v-if="editingRecordId === record.id"><input v-model.number="editDraft.seedCount" class="table-input" type="number" min="0" step="1" /></td>
+            <td v-else>{{ record.seedCount }}</td>
+            <td>{{ editingRecordId === record.id && numberOrEmpty(editDraft.siliqueLengthMm) !== '' && numberOrEmpty(editDraft.seedCount) !== '' ? round(Number(editDraft.seedCount) / (Number(editDraft.siliqueLengthMm) / 10), 2) : record.seedsPerCm }}</td>
+            <td v-if="editingRecordId === record.id">
+              <select v-model="editDraft.quality" class="table-input">
+                <option value="good">可训练</option>
+                <option value="blurry">模糊</option>
+                <option value="reflective">反光</option>
+                <option value="overlapping">籽粒粘连</option>
+                <option value="edge_interference">边缘干扰</option>
+                <option value="exclude">不进训练集</option>
+              </select>
+            </td>
+            <td v-else>{{ record.quality || '-' }}</td>
             <td>{{ record.method }}</td>
             <td>{{ record.measuredAt }}</td>
+            <td>
+              <div class="table-actions">
+                <template v-if="editingRecordId === record.id">
+                  <button type="button" @click="saveEditRecord(record.id)">保存</button>
+                  <button type="button" class="ghost" @click="cancelEditRecord">取消</button>
+                </template>
+                <template v-else>
+                  <button type="button" @click="startEditRecord(record)">编辑</button>
+                  <button type="button" class="danger" @click="deleteRecord(record.id)">删除</button>
+                </template>
+              </div>
+            </td>
           </tr>
         </tbody>
       </table>
