@@ -70,31 +70,75 @@ npm run preview
 
 建好 `silique_records` 表和 `rapeseed-images` bucket 后，还需要允许 anon 访问 Storage。SQL Editor 中执行：
 
+如果要多人账号隔离，先给记录表增加 `user_id`，并把旧的 anon 全开放策略替换为当前用户策略：
+
 ```sql
-create policy "allow anon read rapeseed images"
+alter table silique_records
+add column if not exists user_id uuid references auth.users(id) on delete cascade;
+
+drop policy if exists "allow anon read silique records" on silique_records;
+drop policy if exists "allow anon insert silique records" on silique_records;
+drop policy if exists "allow anon update silique records" on silique_records;
+drop policy if exists "allow anon delete silique records" on silique_records;
+
+create policy "users can read own silique records"
+on silique_records
+for select
+to authenticated
+using (auth.uid() = user_id);
+
+create policy "users can insert own silique records"
+on silique_records
+for insert
+to authenticated
+with check (auth.uid() = user_id);
+
+create policy "users can update own silique records"
+on silique_records
+for update
+to authenticated
+using (auth.uid() = user_id)
+with check (auth.uid() = user_id);
+
+create policy "users can delete own silique records"
+on silique_records
+for delete
+to authenticated
+using (auth.uid() = user_id);
+```
+
+Storage 建议也按用户目录隔离：
+
+```sql
+drop policy if exists "allow anon read rapeseed images" on storage.objects;
+drop policy if exists "allow anon upload rapeseed images" on storage.objects;
+drop policy if exists "allow anon update rapeseed images" on storage.objects;
+drop policy if exists "allow anon delete rapeseed images" on storage.objects;
+
+create policy "users can read own rapeseed images"
 on storage.objects
 for select
-to anon
-using (bucket_id = 'rapeseed-images');
+to authenticated
+using (bucket_id = 'rapeseed-images' and auth.uid()::text = (storage.foldername(name))[1]);
 
-create policy "allow anon upload rapeseed images"
+create policy "users can upload own rapeseed images"
 on storage.objects
 for insert
-to anon
-with check (bucket_id = 'rapeseed-images');
+to authenticated
+with check (bucket_id = 'rapeseed-images' and auth.uid()::text = (storage.foldername(name))[1]);
 
-create policy "allow anon update rapeseed images"
+create policy "users can update own rapeseed images"
 on storage.objects
 for update
-to anon
-using (bucket_id = 'rapeseed-images')
-with check (bucket_id = 'rapeseed-images');
+to authenticated
+using (bucket_id = 'rapeseed-images' and auth.uid()::text = (storage.foldername(name))[1])
+with check (bucket_id = 'rapeseed-images' and auth.uid()::text = (storage.foldername(name))[1]);
 
-create policy "allow anon delete rapeseed images"
+create policy "users can delete own rapeseed images"
 on storage.objects
 for delete
-to anon
-using (bucket_id = 'rapeseed-images');
+to authenticated
+using (bucket_id = 'rapeseed-images' and auth.uid()::text = (storage.foldername(name))[1]);
 ```
 
 ## 云端存储

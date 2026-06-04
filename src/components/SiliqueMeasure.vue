@@ -21,8 +21,12 @@ import { deleteSiliqueRecordIndexed, loadSiliqueRecords, loadSiliqueRecordsFull,
 import {
   deleteCloudSiliqueRecord,
   fetchCloudSiliqueRecords,
+  loadSupabaseSession,
   loadSupabaseSettings,
   saveSupabaseSettings,
+  signInSupabase,
+  signOutSupabase,
+  signUpSupabase,
   testSupabaseConnection,
   upsertCloudSiliqueRecord,
   upsertCloudSiliqueRecords,
@@ -45,6 +49,11 @@ const showTrainingPanel = ref(false)
 const showResultsPanel = ref(false)
 const showCloudPanel = ref(false)
 const supabaseSettings = reactive(loadSupabaseSettings())
+const supabaseSession = ref(loadSupabaseSession())
+const authForm = reactive({
+  email: '',
+  password: '',
+})
 const cloudStatus = ref('填写 Supabase URL 和 anon key 后，可把手机和电脑数据同步到云端。')
 const cloudSyncing = ref(false)
 const editDraft = reactive({
@@ -146,6 +155,7 @@ const trainingStats = computed(() => {
     yoloReady: yoloReady.length,
   }
 })
+const currentCloudUser = computed(() => supabaseSession.value?.user?.email || supabaseSession.value?.user?.id || '')
 
 function applySampleTemplate() {
   localStorage.setItem('rapeseed-pheno-tool:silique-sample-template', sampleTemplate.value.trim())
@@ -538,11 +548,63 @@ async function testCloudSync() {
   }
 }
 
-async function pushRecordsToCloud(showMessage = true) {
-  if (!supabaseSettings.enabled) return
+async function registerCloudUser() {
+  if (!authForm.email.trim() || !authForm.password) return
+  cloudSyncing.value = true
+  cloudStatus.value = '正在注册 Supabase 账号...'
+  try {
+    const session = await signUpSupabase(supabaseSettings, authForm.email.trim(), authForm.password)
+    supabaseSession.value = session?.access_token ? session : null
+    supabaseSettings.enabled = Boolean(supabaseSession.value)
+    cloudStatus.value = supabaseSession.value ? '注册成功，已登录并开启云同步。' : '注册成功。若 Supabase 开启了邮箱验证，请先到邮箱确认后再登录。'
+  } catch (error) {
+    cloudStatus.value = `注册失败：${error.message}`
+  } finally {
+    cloudSyncing.value = false
+  }
+}
+
+async function loginCloudUser() {
+  if (!authForm.email.trim() || !authForm.password) return
+  cloudSyncing.value = true
+  cloudStatus.value = '正在登录 Supabase...'
+  try {
+    supabaseSession.value = await signInSupabase(supabaseSettings, authForm.email.trim(), authForm.password)
+    supabaseSettings.enabled = true
+    saveSupabaseSettings(supabaseSettings)
+    cloudStatus.value = `已登录：${currentCloudUser.value}`
+    await pullRecordsFromCloud()
+  } catch (error) {
+    cloudStatus.value = `登录失败：${error.message}`
+  } finally {
+    cloudSyncing.value = false
+  }
+}
+
+async function logoutCloudUser() {
   cloudSyncing.value = true
   try {
-    const synced = await upsertCloudSiliqueRecords(supabaseSettings, records.value)
+    await signOutSupabase(supabaseSettings, supabaseSession.value)
+    supabaseSession.value = null
+    supabaseSettings.enabled = false
+    saveSupabaseSettings(supabaseSettings)
+    cloudStatus.value = '已退出云端账号。本机 IndexedDB 数据仍保留。'
+  } catch (error) {
+    cloudStatus.value = `退出失败：${error.message}`
+  } finally {
+    cloudSyncing.value = false
+  }
+}
+
+async function pushRecordsToCloud(showMessage = true) {
+  if (!supabaseSettings.enabled) return
+  if (!supabaseSession.value?.user?.id) {
+    cloudStatus.value = '请先登录 Supabase 账号，再同步云端。'
+    return
+  }
+  cloudSyncing.value = true
+  try {
+    const synced = await upsertCloudSiliqueRecords(supabaseSettings, records.value, supabaseSession.value)
     records.value = mergeRecordLists(records.value, synced)
     await saveSiliqueRecords(records.value)
     if (showMessage) cloudStatus.value = `已同步到 Supabase：${synced.length} 条记录。`
@@ -554,9 +616,13 @@ async function pushRecordsToCloud(showMessage = true) {
 }
 
 async function pullRecordsFromCloud() {
+  if (!supabaseSession.value?.user?.id) {
+    cloudStatus.value = '请先登录 Supabase 账号，再从云端拉取。'
+    return
+  }
   cloudSyncing.value = true
   try {
-    const cloudRecords = await fetchCloudSiliqueRecords(supabaseSettings)
+    const cloudRecords = await fetchCloudSiliqueRecords(supabaseSettings, supabaseSession.value)
     records.value = mergeRecordLists(records.value, cloudRecords)
     await saveSiliqueRecords(records.value)
     cloudStatus.value = `已从 Supabase 拉取 ${cloudRecords.length} 条记录，本机当前 ${records.value.length} 条。`
@@ -569,8 +635,12 @@ async function pullRecordsFromCloud() {
 
 async function syncRecordToCloud(record) {
   if (!supabaseSettings.enabled) return record
+  if (!supabaseSession.value?.user?.id) {
+    cloudStatus.value = '记录已本地保存。登录 Supabase 后可同步到个人云端。'
+    return record
+  }
   try {
-    const cloudRecord = await upsertCloudSiliqueRecord(supabaseSettings, record)
+    const cloudRecord = await upsertCloudSiliqueRecord(supabaseSettings, record, supabaseSession.value)
     cloudStatus.value = cloudRecord.cloudUploadError
       ? `记录数据已同步到 Supabase，但照片上传失败：${cloudRecord.cloudUploadError}`
       : '记录已同步到 Supabase。'
@@ -582,9 +652,9 @@ async function syncRecordToCloud(record) {
 }
 
 async function deleteRecordFromCloud(recordId) {
-  if (!supabaseSettings.enabled) return
+  if (!supabaseSettings.enabled || !supabaseSession.value?.user?.id) return
   try {
-    await deleteCloudSiliqueRecord(supabaseSettings, recordId)
+    await deleteCloudSiliqueRecord(supabaseSettings, recordId, supabaseSession.value)
     cloudStatus.value = '云端记录已删除。'
   } catch (error) {
     cloudStatus.value = `云端删除失败：${error.message}`
@@ -1317,6 +1387,24 @@ onBeforeUnmount(() => {
             Storage bucket
             <input v-model="supabaseSettings.bucket" placeholder="rapeseed-images" />
           </label>
+          <div v-if="currentCloudUser" class="cloud-user-row">
+            <span>当前账号：{{ currentCloudUser }}</span>
+            <button type="button" :disabled="cloudSyncing" @click="logoutCloudUser">退出</button>
+          </div>
+          <template v-else>
+            <label class="range-field">
+              邮箱
+              <input v-model="authForm.email" type="email" placeholder="name@example.com" />
+            </label>
+            <label class="range-field">
+              密码
+              <input v-model="authForm.password" type="password" placeholder="至少 6 位" />
+            </label>
+            <div class="button-row compact-row">
+              <button type="button" :disabled="cloudSyncing" @click="loginCloudUser">登录</button>
+              <button type="button" :disabled="cloudSyncing" @click="registerCloudUser">注册</button>
+            </div>
+          </template>
           <label class="checkbox-row">
             <input v-model="supabaseSettings.enabled" type="checkbox" />
             <span>启用自动云同步</span>

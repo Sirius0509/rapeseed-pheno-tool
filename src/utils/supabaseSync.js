@@ -1,4 +1,5 @@
 const SETTINGS_KEY = 'rapeseed-pheno-tool:supabase-settings'
+const SESSION_KEY = 'rapeseed-pheno-tool:supabase-session'
 const DEFAULT_BUCKET = 'rapeseed-images'
 
 export function loadSupabaseSettings() {
@@ -27,28 +28,83 @@ export function saveSupabaseSettings(settings) {
   )
 }
 
+export function loadSupabaseSession() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null')
+    if (!saved?.access_token || !saved?.user?.id) return null
+    return saved
+  } catch {
+    return null
+  }
+}
+
+export function saveSupabaseSession(session) {
+  if (!session) {
+    localStorage.removeItem(SESSION_KEY)
+    return
+  }
+  localStorage.setItem(SESSION_KEY, JSON.stringify(session))
+}
+
+export async function signUpSupabase(settings, email, password) {
+  const response = await authFetch(settings, '/auth/v1/signup', {
+    method: 'POST',
+    body: JSON.stringify({ email, password }),
+  })
+  if (!response.ok) throw new Error(await response.text())
+  const result = await response.json()
+  const session = result.session || result
+  if (session?.access_token) saveSupabaseSession(session)
+  return session
+}
+
+export async function signInSupabase(settings, email, password) {
+  const response = await authFetch(settings, '/auth/v1/token?grant_type=password', {
+    method: 'POST',
+    body: JSON.stringify({ email, password }),
+  })
+  if (!response.ok) throw new Error(await response.text())
+  const session = await response.json()
+  saveSupabaseSession(session)
+  return session
+}
+
+export async function signOutSupabase(settings, session) {
+  if (session?.access_token) {
+    await authFetch(settings, '/auth/v1/logout', {
+      method: 'POST',
+      session,
+    }).catch(() => {})
+  }
+  saveSupabaseSession(null)
+}
+
 export async function testSupabaseConnection(settings) {
-  const response = await supabaseFetch(settings, '/rest/v1/silique_records?select=id&limit=1')
+  const response = await supabaseFetch(settings, '/rest/v1/silique_records?select=id&limit=1', {}, loadSupabaseSession())
   if (!response.ok) throw new Error(await response.text())
   return true
 }
 
-export async function fetchCloudSiliqueRecords(settings) {
-  const response = await supabaseFetch(settings, '/rest/v1/silique_records?select=*&order=created_at.desc')
+export async function fetchCloudSiliqueRecords(settings, session = loadSupabaseSession()) {
+  const query = session?.user?.id
+    ? `/rest/v1/silique_records?select=*&user_id=eq.${encodeURIComponent(session.user.id)}&order=created_at.desc`
+    : '/rest/v1/silique_records?select=*&order=created_at.desc'
+  const response = await supabaseFetch(settings, query, {}, session)
   if (!response.ok) throw new Error(await response.text())
   const rows = await response.json()
-  return rows.map(rowToRecord)
+  return rows.map(rowToRecord).filter((record) => !session?.user?.id || record.userId === session.user.id)
 }
 
-export async function upsertCloudSiliqueRecord(settings, record) {
-  const cloudRecord = await withCloudImages(settings, record)
+export async function upsertCloudSiliqueRecord(settings, record, session = loadSupabaseSession()) {
+  if (!session?.user?.id) throw new Error('请先登录 Supabase 账号。')
+  const cloudRecord = await withCloudImages(settings, { ...record, userId: session.user.id }, session)
   const response = await supabaseFetch(settings, '/rest/v1/silique_records?on_conflict=id', {
     method: 'POST',
     headers: {
       Prefer: 'resolution=merge-duplicates,return=representation',
     },
     body: JSON.stringify([recordToRow(cloudRecord)]),
-  })
+  }, session)
   if (!response.ok) throw new Error(await response.text())
   const rows = await response.json()
   const saved = rows[0] ? rowToRecord(rows[0]) : cloudRecord
@@ -56,31 +112,31 @@ export async function upsertCloudSiliqueRecord(settings, record) {
   return saved
 }
 
-export async function upsertCloudSiliqueRecords(settings, records) {
+export async function upsertCloudSiliqueRecords(settings, records, session = loadSupabaseSession()) {
   const synced = []
-  for (const record of records) synced.push(await upsertCloudSiliqueRecord(settings, record))
+  for (const record of records) synced.push(await upsertCloudSiliqueRecord(settings, record, session))
   return synced
 }
 
-export async function deleteCloudSiliqueRecord(settings, recordId) {
+export async function deleteCloudSiliqueRecord(settings, recordId, session = loadSupabaseSession()) {
   const response = await supabaseFetch(settings, `/rest/v1/silique_records?id=eq.${encodeURIComponent(recordId)}`, {
     method: 'DELETE',
-  })
+  }, session)
   if (!response.ok) throw new Error(await response.text())
 }
 
-async function withCloudImages(settings, record) {
+async function withCloudImages(settings, record, session) {
   const result = { ...record }
   if (record.siliqueImageDataUrl && !record.siliqueImageUrl) {
     try {
-      result.siliqueImageUrl = await uploadDataUrl(settings, record.siliqueImageDataUrl, imagePath(record, 'silique'))
+      result.siliqueImageUrl = await uploadDataUrl(settings, record.siliqueImageDataUrl, imagePath(record, 'silique'), session)
     } catch (error) {
       result.cloudUploadError = error.message
     }
   }
   if ((record.seedImageDataUrl || record.imageDataUrl) && !record.seedImageUrl) {
     try {
-      result.seedImageUrl = await uploadDataUrl(settings, record.seedImageDataUrl || record.imageDataUrl, imagePath(record, 'seed'))
+      result.seedImageUrl = await uploadDataUrl(settings, record.seedImageDataUrl || record.imageDataUrl, imagePath(record, 'seed'), session)
     } catch (error) {
       result.cloudUploadError = error.message
     }
@@ -89,7 +145,7 @@ async function withCloudImages(settings, record) {
   return result
 }
 
-async function uploadDataUrl(settings, dataUrl, path) {
+async function uploadDataUrl(settings, dataUrl, path, session) {
   const blob = dataUrlToBlob(dataUrl)
   const response = await supabaseFetch(settings, `/storage/v1/object/${encodeURIComponent(settings.bucket || DEFAULT_BUCKET)}/${path}`, {
     method: 'POST',
@@ -98,7 +154,7 @@ async function uploadDataUrl(settings, dataUrl, path) {
       'x-upsert': 'true',
     },
     body: blob,
-  })
+  }, session)
   if (!response.ok) throw new Error(await response.text())
   return `${normalizeUrl(settings.url)}/storage/v1/object/public/${encodeURIComponent(settings.bucket || DEFAULT_BUCKET)}/${path}`
 }
@@ -106,6 +162,7 @@ async function uploadDataUrl(settings, dataUrl, path) {
 function recordToRow(record) {
   return {
     id: record.id,
+    user_id: record.userId || null,
     sample_id: record.sampleId || '',
     genotype: record.genotype || '',
     replicate: record.replicate || '',
@@ -133,6 +190,7 @@ function recordToRow(record) {
 function rowToRecord(row) {
   return {
     id: row.id,
+    userId: row.user_id || '',
     genotype: row.genotype || '',
     sampleId: row.sample_id || '',
     replicate: row.replicate || '',
@@ -158,15 +216,29 @@ function rowToRecord(row) {
   }
 }
 
-function supabaseFetch(settings, path, options = {}) {
+function supabaseFetch(settings, path, options = {}, session = null) {
   const url = normalizeUrl(settings.url)
   if (!url || !settings.anonKey) throw new Error('请先填写 Supabase URL 和 anon key。')
   return fetch(`${url}${path}`, {
     ...options,
     headers: {
       apikey: settings.anonKey,
-      Authorization: `Bearer ${settings.anonKey}`,
+      Authorization: `Bearer ${session?.access_token || settings.anonKey}`,
       ...(options.body && !(options.body instanceof Blob) ? { 'Content-Type': 'application/json' } : {}),
+      ...(options.headers || {}),
+    },
+  })
+}
+
+function authFetch(settings, path, options = {}) {
+  const url = normalizeUrl(settings.url)
+  if (!url || !settings.anonKey) throw new Error('请先填写 Supabase URL 和 anon key。')
+  return fetch(`${url}${path}`, {
+    ...options,
+    headers: {
+      apikey: settings.anonKey,
+      Authorization: `Bearer ${options.session?.access_token || settings.anonKey}`,
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
       ...(options.headers || {}),
     },
   })
@@ -178,9 +250,10 @@ function normalizeUrl(url) {
 
 function imagePath(record, kind) {
   const ext = imageExtension(kind === 'silique' ? record.siliqueImageDataUrl : record.seedImageDataUrl || record.imageDataUrl)
+  const user = safeName(record.userId || 'anonymous')
   const sample = safeName(record.sampleId || 'sample')
   const silique = safeName(record.siliqueId || record.id)
-  return `${sample}/${silique}/${kind}-${record.id}.${ext}`
+  return `${user}/${sample}/${silique}/${kind}-${record.id}.${ext}`
 }
 
 function dataUrlToBlob(dataUrl) {

@@ -490,6 +490,20 @@ canvas {
   width: auto;
 }
 
+.cloud-user-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+
+.cloud-user-row button {
+  width: auto;
+}
+
 .hint {
   margin: 0;
   color: var(--muted);
