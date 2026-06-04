@@ -7,6 +7,9 @@ import sys
 import threading
 import uuid
 import re
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -92,6 +95,19 @@ class StoredRecordsRequest(BaseModel):
 
 
 class TrainStoredRequest(BaseModel):
+    model: str = "yolo11n.pt"
+    epochs: int = Field(default=50, ge=1, le=300)
+    imgsz: int = Field(default=1024, ge=320, le=2048)
+    batch: int = Field(default=4, ge=1, le=64)
+    trainRatio: float = Field(default=0.8, ge=0.5, le=0.95)
+    dryRun: bool = False
+
+
+class TrainCloudRequest(BaseModel):
+    supabaseUrl: str
+    anonKey: str
+    accessToken: str
+    userId: str
     model: str = "yolo11n.pt"
     epochs: int = Field(default=50, ge=1, le=300)
     imgsz: int = Field(default=1024, ge=320, le=2048)
@@ -533,6 +549,22 @@ def train_yolo_stored(payload: TrainStoredRequest):
     )
 
 
+@app.post("/api/train-yolo-cloud")
+def train_yolo_cloud(payload: TrainCloudRequest):
+    records = fetch_supabase_training_records(payload)
+    return train_yolo(
+        TrainRequest(
+            records=records,
+            model=payload.model,
+            epochs=payload.epochs,
+            imgsz=payload.imgsz,
+            batch=payload.batch,
+            trainRatio=payload.trainRatio,
+            dryRun=payload.dryRun,
+        )
+    )
+
+
 @app.post("/api/seed-candidates")
 def seed_candidates(payload: SeedCandidateRequest):
     img = decode_data_url(payload.imageDataUrl)
@@ -766,6 +798,72 @@ def merge_records(existing: list[dict], incoming: list[dict]) -> list[dict]:
         key=lambda record: str(record.get("createdAt") or record.get("measuredAt") or record.get("syncedAt") or ""),
         reverse=True,
     )
+
+
+def fetch_supabase_training_records(payload: TrainCloudRequest) -> list[TrainingRecord]:
+    url = normalize_supabase_url(payload.supabaseUrl)
+    query = (
+        f"{url}/rest/v1/silique_records"
+        f"?select=*&user_id=eq.{urllib.parse.quote(payload.userId)}&order=created_at.desc"
+    )
+    request = urllib.request.Request(
+        query,
+        headers={
+            "apikey": payload.anonKey,
+            "Authorization": f"Bearer {payload.accessToken}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            rows = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        message = exc.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"云端数据读取失败：{message}") from exc
+
+    records = []
+    for row in rows:
+        if row.get("quality") == "exclude":
+            continue
+        points = row.get("seed_points_json") or []
+        image_url = row.get("seed_image_url") or row.get("cloud_url")
+        if not points or not image_url:
+            continue
+        try:
+            image_data_url, width, height = download_image_as_data_url(image_url, payload.accessToken)
+            records.append(
+                TrainingRecord(
+                    id=str(row.get("id") or uuid.uuid4()),
+                    imageDataUrl=image_data_url,
+                    imageWidth=width,
+                    imageHeight=height,
+                    sampleId=row.get("sample_id") or "",
+                    siliqueId=row.get("silique_id") or "",
+                    quality=row.get("quality") or "good",
+                    seedPoints=[SeedPoint(**point) for point in points if "x" in point and "y" in point],
+                    autoSeedPoints=[SeedPoint(**point) for point in (row.get("auto_seed_points_json") or []) if "x" in point and "y" in point],
+                )
+            )
+        except Exception:
+            continue
+    return records
+
+
+def download_image_as_data_url(url: str, access_token: str) -> tuple[str, int, int]:
+    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {access_token}"})
+    with urllib.request.urlopen(request, timeout=30) as response:
+        raw = response.read()
+        content_type = response.headers.get("Content-Type") or "image/jpeg"
+    arr = np.frombuffer(raw, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img is None:
+        raise ValueError("Unable to decode cloud image")
+    height, width = img.shape[:2]
+    data_url = f"data:{content_type};base64,{base64.b64encode(raw).decode('ascii')}"
+    return data_url, width, height
+
+
+def normalize_supabase_url(url: str) -> str:
+    return re.sub(r"/rest/v1/?$", "", str(url or "").rstrip("/"))
 
 
 def safe_name(value: str) -> str:

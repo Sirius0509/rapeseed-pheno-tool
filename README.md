@@ -65,6 +65,7 @@ npm run preview
 - 角果/籽粒记录使用 IndexedDB 保存完整图片和点位，避免大量照片超过 localStorage 容量后刷新丢失。
 - 填写电脑后端地址后，手机端保存记录会同步到电脑后端；电脑端可从后端同步记录，也可以直接用后端共享记录一键训练模型。
 - 支持 Supabase 云同步设置：同一个 Supabase URL、anon key 和 `rapeseed-images` bucket 可让手机和电脑共享云端记录。
+- 电脑后端支持直接拉取当前登录用户的 Supabase 云端记录和图片训练 YOLO 模型，不需要先手动把云端数据同步到浏览器本地。
 
 ## Supabase 配置
 

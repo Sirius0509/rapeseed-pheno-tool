@@ -533,6 +533,45 @@ async function startStoredYoloTraining() {
   }
 }
 
+async function startCloudYoloTraining() {
+  if (!serviceUrl.value.trim()) return
+  if (!supabaseSession.value?.user?.id) {
+    trainStatus.value = '请先登录 Supabase 账号，再用云端数据训练。'
+    return
+  }
+  training.value = true
+  trainStatus.value = '正在让电脑后端拉取 Supabase 云端数据...'
+  trainJob.value = null
+  clearTrainingPoll()
+
+  try {
+    localStorage.setItem('rapeseed-pheno-tool:seed-service-url', serviceUrl.value.trim())
+    const endpoint = `${serviceUrl.value.trim().replace(/\/$/, '')}/api/train-yolo-cloud`
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        supabaseUrl: supabaseSettings.url,
+        anonKey: supabaseSettings.anonKey,
+        accessToken: supabaseSession.value.access_token,
+        userId: supabaseSession.value.user.id,
+        model: 'yolo11n.pt',
+        epochs: 50,
+        imgsz: 1024,
+        batch: 4,
+      }),
+    })
+    const result = await response.json()
+    if (!response.ok || !result.ok) throw new Error(result.error || `云端训练服务失败: ${response.status}`)
+    trainJob.value = result.job
+    updateTrainStatus(result.job)
+    trainPollTimer = window.setInterval(() => pollYoloTraining(result.job.id), 3000)
+  } catch (error) {
+    training.value = false
+    trainStatus.value = `云端数据训练失败：${error.message}`
+  }
+}
+
 async function testCloudSync() {
   cloudSyncing.value = true
   cloudStatus.value = '正在测试 Supabase 连接...'
@@ -1489,6 +1528,10 @@ onBeforeUnmount(() => {
           <button type="button" :disabled="!serviceUrl.trim() || training" @click="startStoredYoloTraining">
             <Play :size="18" />
             用电脑同步数据训练
+          </button>
+          <button type="button" :disabled="!serviceUrl.trim() || !currentCloudUser || training" @click="startCloudYoloTraining">
+            <Play :size="18" />
+            用 Supabase 云端数据训练
           </button>
         </div>
         <p class="hint status">{{ trainStatus }}</p>
