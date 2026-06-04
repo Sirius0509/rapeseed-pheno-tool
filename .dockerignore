@@ -1,0 +1,17 @@
+.git
+.github
+node_modules
+dist
+backend/.venv
+backend/data
+backend/datasets
+backend/runs/*
+!backend/runs/manual-seed-test/
+!backend/runs/manual-seed-test/train/
+!backend/runs/manual-seed-test/train/seed_detector/
+!backend/runs/manual-seed-test/train/seed_detector/weights/
+!backend/runs/manual-seed-test/train/seed_detector/weights/best.pt
+*.zip
+*.xlsx
+*.csv
+.DS_Store
