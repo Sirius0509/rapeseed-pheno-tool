@@ -56,7 +56,7 @@ export function exportSamples(samples) {
 
 export function exportSiliqueRecords(records) {
   const siliqueHeaders = [
-    '材料编号',
+    '材料类型',
     '样品编号',
     '重复',
     '角果编号',

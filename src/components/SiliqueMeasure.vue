@@ -370,8 +370,9 @@ function recommendSeedParams() {
   const p20 = percentile(brightness, 0.2)
   const median = percentile(brightness, 0.5)
   foregroundMode.value = 'dark'
-  threshold.value = Math.round(Math.max(45, Math.min(115, Math.min(p20, p10 + 18))))
-  if (median - threshold.value < 35) threshold.value = Math.round(Math.max(45, Math.min(115, p10 + 12)))
+  let recommended = Math.round(Math.max(45, Math.min(115, Math.min(p20, p10 + 18))))
+  if (median - recommended < 35) recommended = Math.round(Math.max(45, Math.min(115, p10 + 12)))
+  threshold.value = Math.round(Math.max(68, Math.min(78, recommended * 0.35 + 73 * 0.65)))
   minSeedArea.value = Math.max(8, minSeedArea.value)
   maxSeedArea.value = Math.max(900, maxSeedArea.value)
   minRoundness.value = Math.min(0.3, Math.max(0.18, minRoundness.value))
@@ -1365,6 +1366,7 @@ onBeforeUnmount(() => {
         </button>
         <div v-show="showRecordPanel">
         <div class="form-grid">
+          <label>材料类型<input v-model="form.genotype" placeholder="例如 WT / mutant" /></label>
           <label class="wide">编号示范<input v-model="sampleTemplate" placeholder="例如 G0001" @change="applySampleTemplate" /></label>
           <label class="wide">
             样品编号
@@ -1372,7 +1374,6 @@ onBeforeUnmount(() => {
               <option v-for="sample in sampleOptions" :key="sample" :value="sample">{{ sample }}</option>
             </select>
           </label>
-          <label>材料编号<input v-model="form.genotype" placeholder="例如 G0001" /></label>
           <label>
             重复
             <select v-model="form.replicate">
@@ -1400,31 +1401,6 @@ onBeforeUnmount(() => {
             标注图
           </button>
         </div>
-        </div>
-      </section>
-
-      <section class="panel">
-        <button class="panel-toggle" type="button" @click="showRecordPanel = !showRecordPanel">
-          <span>确认数据</span>
-          <span>{{ showRecordPanel ? '收起' : '展开' }}</span>
-        </button>
-        <div v-show="showRecordPanel">
-        <div class="form-grid">
-          <label>保存长度 mm<input v-model.number="state.manualSiliqueLengthMm" type="number" min="0" step="0.01" placeholder="可自动确认或手动输入" /></label>
-          <label>保存籽粒数<input v-model.number="state.manualSeedCount" type="number" min="0" step="1" placeholder="可自动确认或手动输入" /></label>
-          <label class="wide">保存粒数/cm<input :value="confirmedMetrics.seedsPerCm || ''" readonly placeholder="自动计算" /></label>
-        </div>
-        <div class="button-row">
-          <button type="button" :disabled="!metrics.siliqueLengthMm" @click="confirmSiliqueLength">
-            <Save :size="18" />
-            确认角果长度
-          </button>
-          <button type="button" :disabled="!image" @click="confirmSeedCount">
-            <Save :size="18" />
-            确认籽粒数
-          </button>
-        </div>
-        <p class="hint">可以点击确认按钮自动填入，也可以直接手动输入长度和籽粒数。保存记录会使用这里最终显示的数值。</p>
         </div>
       </section>
 
@@ -1580,8 +1556,9 @@ onBeforeUnmount(() => {
       <table>
         <thead>
           <tr>
-            <th>材料编号</th>
+            <th>材料类型</th>
             <th>样品编号</th>
+            <th>重复</th>
             <th>角果编号</th>
             <th>长度 mm</th>
             <th>籽粒数</th>
@@ -1593,12 +1570,18 @@ onBeforeUnmount(() => {
           </tr>
         </thead>
         <tbody>
-          <tr v-if="!records.length"><td colspan="10">暂无记录</td></tr>
+          <tr v-if="!records.length"><td colspan="11">暂无记录</td></tr>
           <tr v-for="record in records" :key="record.id">
             <td v-if="editingRecordId === record.id"><input v-model="editDraft.genotype" class="table-input" /></td>
             <td v-else>{{ record.genotype }}</td>
             <td v-if="editingRecordId === record.id"><input v-model="editDraft.sampleId" class="table-input" /></td>
             <td v-else>{{ record.sampleId }}</td>
+            <td v-if="editingRecordId === record.id">
+              <select v-model="editDraft.replicate" class="table-input">
+                <option v-for="replicate in replicateOptions" :key="replicate" :value="replicate">{{ replicate }}</option>
+              </select>
+            </td>
+            <td v-else>{{ record.replicate }}</td>
             <td v-if="editingRecordId === record.id"><input v-model="editDraft.siliqueId" class="table-input" /></td>
             <td v-else>{{ record.siliqueId }}</td>
             <td v-if="editingRecordId === record.id"><input v-model.number="editDraft.siliqueLengthMm" class="table-input" type="number" min="0" step="0.01" /></td>
