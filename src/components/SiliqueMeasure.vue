@@ -18,6 +18,15 @@ import { distance, round } from '../utils/geometry'
 import { exportSiliqueRecords } from '../utils/exportExcel'
 import { exportSiliqueTrainingData, exportSiliqueYoloDataset } from '../utils/exportTrainingData'
 import { deleteSiliqueRecordIndexed, loadSiliqueRecords, loadSiliqueRecordsFull, saveSiliqueRecords } from '../utils/storage'
+import {
+  deleteCloudSiliqueRecord,
+  fetchCloudSiliqueRecords,
+  loadSupabaseSettings,
+  saveSupabaseSettings,
+  testSupabaseConnection,
+  upsertCloudSiliqueRecord,
+  upsertCloudSiliqueRecords,
+} from '../utils/supabaseSync'
 
 const canvas = ref(null)
 const video = ref(null)
@@ -34,6 +43,10 @@ const showRecordPanel = ref(true)
 const showDetectPanel = ref(false)
 const showTrainingPanel = ref(false)
 const showResultsPanel = ref(false)
+const showCloudPanel = ref(false)
+const supabaseSettings = reactive(loadSupabaseSettings())
+const cloudStatus = ref('填写 Supabase URL 和 anon key 后，可把手机和电脑数据同步到云端。')
+const cloudSyncing = ref(false)
 const editDraft = reactive({
   genotype: '',
   sampleId: '',
@@ -87,6 +100,7 @@ const state = reactive({
 })
 
 watch([threshold, minSeedArea, maxSeedArea, minRoundness, foregroundMode], saveDetectParams)
+watch(supabaseSettings, () => saveSupabaseSettings(supabaseSettings))
 
 onMounted(async () => {
   const fullRecords = await loadSiliqueRecordsFull()
@@ -509,6 +523,74 @@ async function startStoredYoloTraining() {
   }
 }
 
+async function testCloudSync() {
+  cloudSyncing.value = true
+  cloudStatus.value = '正在测试 Supabase 连接...'
+  try {
+    await testSupabaseConnection(supabaseSettings)
+    supabaseSettings.enabled = true
+    saveSupabaseSettings(supabaseSettings)
+    cloudStatus.value = 'Supabase 连接成功，已开启自动云同步。'
+  } catch (error) {
+    cloudStatus.value = `Supabase 连接失败：${error.message}`
+  } finally {
+    cloudSyncing.value = false
+  }
+}
+
+async function pushRecordsToCloud(showMessage = true) {
+  if (!supabaseSettings.enabled) return
+  cloudSyncing.value = true
+  try {
+    const synced = await upsertCloudSiliqueRecords(supabaseSettings, records.value)
+    records.value = mergeRecordLists(records.value, synced)
+    await saveSiliqueRecords(records.value)
+    if (showMessage) cloudStatus.value = `已同步到 Supabase：${synced.length} 条记录。`
+  } catch (error) {
+    cloudStatus.value = `同步到 Supabase 失败：${error.message}`
+  } finally {
+    cloudSyncing.value = false
+  }
+}
+
+async function pullRecordsFromCloud() {
+  cloudSyncing.value = true
+  try {
+    const cloudRecords = await fetchCloudSiliqueRecords(supabaseSettings)
+    records.value = mergeRecordLists(records.value, cloudRecords)
+    await saveSiliqueRecords(records.value)
+    cloudStatus.value = `已从 Supabase 拉取 ${cloudRecords.length} 条记录，本机当前 ${records.value.length} 条。`
+  } catch (error) {
+    cloudStatus.value = `从 Supabase 拉取失败：${error.message}`
+  } finally {
+    cloudSyncing.value = false
+  }
+}
+
+async function syncRecordToCloud(record) {
+  if (!supabaseSettings.enabled) return record
+  try {
+    const cloudRecord = await upsertCloudSiliqueRecord(supabaseSettings, record)
+    cloudStatus.value = cloudRecord.cloudUploadError
+      ? `记录数据已同步到 Supabase，但照片上传失败：${cloudRecord.cloudUploadError}`
+      : '记录已同步到 Supabase。'
+    return { ...record, ...cloudRecord }
+  } catch (error) {
+    cloudStatus.value = `记录已本地保存，但云同步失败：${error.message}`
+    return record
+  }
+}
+
+async function deleteRecordFromCloud(recordId) {
+  if (!supabaseSettings.enabled) return
+  try {
+    await deleteCloudSiliqueRecord(supabaseSettings, recordId)
+    cloudStatus.value = '云端记录已删除。'
+  } catch (error) {
+    cloudStatus.value = `云端删除失败：${error.message}`
+  }
+}
+
 async function pollYoloTraining(jobId) {
   try {
     const endpoint = `${serviceUrl.value.trim().replace(/\/$/, '')}/api/train-yolo/${jobId}`
@@ -842,6 +924,11 @@ async function saveRecord() {
   }
   records.value = [record, ...records.value]
   await saveSiliqueRecords(records.value)
+  const syncedRecord = await syncRecordToCloud(record)
+  if (syncedRecord !== record) {
+    records.value = records.value.map((item) => (item.id === record.id ? syncedRecord : item))
+    await saveSiliqueRecords(records.value)
+  }
   await pushRecordsToServer(false)
   syncStatus.value = serviceUrl.value.trim() ? '记录已保存到本机，并已尝试同步到电脑后端。' : '记录已保存到本机。填写电脑后端地址后可同步。'
   incrementSiliqueId()
@@ -883,6 +970,7 @@ async function deleteRecord(recordId) {
   records.value = records.value.filter((record) => record.id !== recordId)
   await saveSiliqueRecords(records.value)
   await deleteSiliqueRecordIndexed(recordId)
+  await deleteRecordFromCloud(recordId)
   await syncRecordDeleteToServer(recordId)
   if (editingRecordId.value === recordId) cancelEditRecord()
 }
@@ -934,6 +1022,12 @@ async function saveEditRecord(recordId) {
     }
   })
   await saveSiliqueRecords(records.value)
+  const edited = records.value.find((record) => record.id === recordId)
+  if (edited) {
+    const syncedRecord = await syncRecordToCloud(edited)
+    records.value = records.value.map((record) => (record.id === recordId ? syncedRecord : record))
+    await saveSiliqueRecords(records.value)
+  }
   await pushRecordsToServer(false)
   syncStatus.value = serviceUrl.value.trim() ? '修改已保存并已尝试同步到电脑后端。' : '修改已保存到本机。'
   cancelEditRecord()
@@ -1202,6 +1296,44 @@ onBeforeUnmount(() => {
           </button>
         </div>
         <p class="hint">可以点击确认按钮自动填入，也可以直接手动输入长度和籽粒数。保存记录会使用这里最终显示的数值。</p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <button class="panel-toggle" type="button" @click="showCloudPanel = !showCloudPanel">
+          <span>Supabase 云同步</span>
+          <span>{{ showCloudPanel ? '收起' : '展开' }}</span>
+        </button>
+        <div v-show="showCloudPanel">
+          <label class="range-field">
+            Supabase URL
+            <input v-model="supabaseSettings.url" placeholder="https://xxxx.supabase.co" />
+          </label>
+          <label class="range-field">
+            Supabase anon key
+            <input v-model="supabaseSettings.anonKey" placeholder="只填写 anon public key，不要填 service_role key" />
+          </label>
+          <label class="range-field">
+            Storage bucket
+            <input v-model="supabaseSettings.bucket" placeholder="rapeseed-images" />
+          </label>
+          <label class="checkbox-row">
+            <input v-model="supabaseSettings.enabled" type="checkbox" />
+            <span>启用自动云同步</span>
+          </label>
+          <div class="button-row compact-row">
+            <button type="button" :disabled="cloudSyncing" @click="testCloudSync">
+              {{ cloudSyncing ? '连接中' : '测试连接' }}
+            </button>
+            <button type="button" :disabled="cloudSyncing || !records.length" @click="pushRecordsToCloud">
+              同步到云端
+            </button>
+            <button type="button" :disabled="cloudSyncing" @click="pullRecordsFromCloud">
+              从云端拉取
+            </button>
+          </div>
+          <p class="hint status">{{ cloudStatus }}</p>
+          <p class="hint">云同步会上传角果照片、籽粒照片和校正点位。手机和电脑填写同一个 Supabase 项目后，可以看到同一批数据。</p>
         </div>
       </section>
 

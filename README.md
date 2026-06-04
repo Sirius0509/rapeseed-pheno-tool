@@ -64,6 +64,38 @@ npm run preview
 - 角果/籽粒 Excel 会包含明细、按样品编号汇总平均值、按样品编号+重复汇总平均值。
 - 角果/籽粒记录使用 IndexedDB 保存完整图片和点位，避免大量照片超过 localStorage 容量后刷新丢失。
 - 填写电脑后端地址后，手机端保存记录会同步到电脑后端；电脑端可从后端同步记录，也可以直接用后端共享记录一键训练模型。
+- 支持 Supabase 云同步设置：同一个 Supabase URL、anon key 和 `rapeseed-images` bucket 可让手机和电脑共享云端记录。
+
+## Supabase 配置
+
+建好 `silique_records` 表和 `rapeseed-images` bucket 后，还需要允许 anon 访问 Storage。SQL Editor 中执行：
+
+```sql
+create policy "allow anon read rapeseed images"
+on storage.objects
+for select
+to anon
+using (bucket_id = 'rapeseed-images');
+
+create policy "allow anon upload rapeseed images"
+on storage.objects
+for insert
+to anon
+with check (bucket_id = 'rapeseed-images');
+
+create policy "allow anon update rapeseed images"
+on storage.objects
+for update
+to anon
+using (bucket_id = 'rapeseed-images')
+with check (bucket_id = 'rapeseed-images');
+
+create policy "allow anon delete rapeseed images"
+on storage.objects
+for delete
+to anon
+using (bucket_id = 'rapeseed-images');
+```
 
 ## 云端存储
 
