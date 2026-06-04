@@ -86,6 +86,8 @@ const serviceUrl = ref(localStorage.getItem('rapeseed-pheno-tool:seed-service-ur
 const detectStatus = ref('先框选籽粒区域，再生成候选点。')
 const detecting = ref(false)
 const training = ref(false)
+const savingRecord = ref(false)
+const saveStatus = ref('填写或确认长度和籽粒数后，点击“保存并上传”生成结果记录。')
 const trainStatus = ref('本地训练需要先运行后端服务，并填写识别服务地址。')
 const trainJob = ref(null)
 const syncStatus = ref('本地保存已启用。填写电脑后端地址后，手机和电脑可同步记录。')
@@ -985,64 +987,80 @@ function clearSeeds() {
 }
 
 async function saveRecord() {
-  if (!form.sampleId.trim() || !form.siliqueId.trim()) return
+  const missing = []
+  if (!form.sampleId.trim()) missing.push('样品编号')
+  if (!form.siliqueId.trim()) missing.push('角果编号')
   const siliqueLengthMm = numberOrEmpty(state.manualSiliqueLengthMm)
   const seedCount = numberOrEmpty(state.manualSeedCount)
-  if (siliqueLengthMm === '' || seedCount === '') return
+  if (siliqueLengthMm === '') missing.push('保存长度 mm')
+  if (seedCount === '') missing.push('保存籽粒数')
+  if (missing.length) {
+    saveStatus.value = `还不能保存：请补全 ${missing.join('、')}。`
+    return
+  }
+  savingRecord.value = true
+  saveStatus.value = '正在保存记录...'
   const seedImageDataUrl = canvas.value && image.value ? canvas.value.toDataURL('image/jpeg', 0.9) : ''
   const siliquePhoto = state.confirmedSiliquePhoto
-  const record = {
-    id: crypto.randomUUID(),
-    genotype: form.genotype.trim(),
-    sampleId: form.sampleId.trim(),
-    replicate: form.replicate.trim(),
-    siliqueId: form.siliqueId.trim(),
-    quality: form.quality,
-    siliqueLengthMm,
-    seedCount,
-    seedsPerCm: siliqueLengthMm ? round(seedCount / (siliqueLengthMm / 10), 2) : '',
-    method: state.detectedSeeds.length ? '候选点+人工确认' : '人工标注',
-    imageName: imageName.value,
-    imageDataUrl: seedImageDataUrl,
-    imageWidth: canvas.value?.width || null,
-    imageHeight: canvas.value?.height || null,
-    seedImageName: imageName.value,
-    seedImageDataUrl,
-    seedImageWidth: canvas.value?.width || null,
-    seedImageHeight: canvas.value?.height || null,
-    siliqueImageName: siliquePhoto?.imageName || '',
-    siliqueImageDataUrl: siliquePhoto?.imageDataUrl || '',
-    siliqueImageWidth: siliquePhoto?.imageWidth || null,
-    siliqueImageHeight: siliquePhoto?.imageHeight || null,
-    siliqueScale: siliquePhoto?.scale || null,
-    siliqueLine: siliquePhoto?.siliqueLine || null,
-    cloudUrl: form.cloudUrl.trim(),
-    notes: form.notes.trim(),
-    seedRoi: state.seedRoi,
-    autoSeedPoints: state.detectedSeeds.map(cleanPoint),
-    seedPoints: state.seedPoints.map(cleanPoint),
-    deletedSeedPoints: state.deletedSeeds.map(cleanPoint),
-    rawAutoCount: state.detectedSeeds.length,
-    correctedCount: confirmedMetrics.value.seedCount,
-    confirmedSiliqueLengthMm: state.confirmedSiliqueLengthMm,
-    confirmedSeedCount: state.confirmedSeedCount,
-    manualSiliqueLengthMm: siliqueLengthMm,
-    manualSeedCount: seedCount,
-    measuredAt: new Date().toISOString().slice(0, 10),
-    createdAt: new Date().toISOString(),
-  }
-  records.value = [record, ...records.value]
-  await saveSiliqueRecords(records.value)
-  const syncedRecord = await syncRecordToCloud(record)
-  if (syncedRecord !== record) {
-    records.value = records.value.map((item) => (item.id === record.id ? syncedRecord : item))
+  try {
+    const record = {
+      id: crypto.randomUUID(),
+      genotype: form.genotype.trim(),
+      sampleId: form.sampleId.trim(),
+      replicate: form.replicate.trim(),
+      siliqueId: form.siliqueId.trim(),
+      quality: form.quality,
+      siliqueLengthMm,
+      seedCount,
+      seedsPerCm: siliqueLengthMm ? round(seedCount / (siliqueLengthMm / 10), 2) : '',
+      method: state.detectedSeeds.length ? '候选点+人工确认' : '人工标注',
+      imageName: imageName.value,
+      imageDataUrl: seedImageDataUrl,
+      imageWidth: canvas.value?.width || null,
+      imageHeight: canvas.value?.height || null,
+      seedImageName: imageName.value,
+      seedImageDataUrl,
+      seedImageWidth: canvas.value?.width || null,
+      seedImageHeight: canvas.value?.height || null,
+      siliqueImageName: siliquePhoto?.imageName || '',
+      siliqueImageDataUrl: siliquePhoto?.imageDataUrl || '',
+      siliqueImageWidth: siliquePhoto?.imageWidth || null,
+      siliqueImageHeight: siliquePhoto?.imageHeight || null,
+      siliqueScale: siliquePhoto?.scale || null,
+      siliqueLine: siliquePhoto?.siliqueLine || null,
+      cloudUrl: form.cloudUrl.trim(),
+      notes: form.notes.trim(),
+      seedRoi: state.seedRoi,
+      autoSeedPoints: state.detectedSeeds.map(cleanPoint),
+      seedPoints: state.seedPoints.map(cleanPoint),
+      deletedSeedPoints: state.deletedSeeds.map(cleanPoint),
+      rawAutoCount: state.detectedSeeds.length,
+      correctedCount: confirmedMetrics.value.seedCount,
+      confirmedSiliqueLengthMm: state.confirmedSiliqueLengthMm,
+      confirmedSeedCount: state.confirmedSeedCount,
+      manualSiliqueLengthMm: siliqueLengthMm,
+      manualSeedCount: seedCount,
+      measuredAt: new Date().toISOString().slice(0, 10),
+      createdAt: new Date().toISOString(),
+    }
+    records.value = [record, ...records.value]
     await saveSiliqueRecords(records.value)
+    const syncedRecord = await syncRecordToCloud(record)
+    if (syncedRecord !== record) {
+      records.value = records.value.map((item) => (item.id === record.id ? syncedRecord : item))
+      await saveSiliqueRecords(records.value)
+    }
+    await pushRecordsToServer(false)
+    syncStatus.value = serviceUrl.value.trim() ? '记录已保存到本机，并已尝试同步到电脑后端。' : '记录已保存到本机。填写电脑后端地址后可同步。'
+    saveStatus.value = supabaseSettings.enabled ? '记录已生成，并已尝试上传云端。' : '记录已生成并保存到本机。'
+    incrementSiliqueId()
+    resetMeasurements()
+    draw()
+  } catch (error) {
+    saveStatus.value = `保存失败：${error.message}`
+  } finally {
+    savingRecord.value = false
   }
-  await pushRecordsToServer(false)
-  syncStatus.value = serviceUrl.value.trim() ? '记录已保存到本机，并已尝试同步到电脑后端。' : '记录已保存到本机。填写电脑后端地址后可同步。'
-  incrementSiliqueId()
-  resetMeasurements()
-  draw()
 }
 
 function numberOrEmpty(value) {
@@ -1320,11 +1338,12 @@ onBeforeUnmount(() => {
             <Save :size="18" />
             确认籽粒
           </button>
-          <button class="primary" type="button" :disabled="!form.sampleId || !form.siliqueId || confirmedMetrics.siliqueLengthMm === '' || confirmedMetrics.seedCount === ''" @click="saveRecord">
+          <button class="primary" type="button" :disabled="savingRecord" @click="saveRecord">
             <Save :size="18" />
-            保存
+            {{ savingRecord ? '保存中' : '保存并上传' }}
           </button>
         </div>
+        <p class="hint status">{{ saveStatus }}</p>
       </div>
 
       <div class="metric-grid">
