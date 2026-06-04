@@ -79,13 +79,33 @@ export async function signOutSupabase(settings, session) {
   saveSupabaseSession(null)
 }
 
+export async function refreshSupabaseSession(settings, session = loadSupabaseSession()) {
+  if (!session?.refresh_token) return session
+  const expiresAt = Number(session.expires_at || 0)
+  const expiresInMoreThanOneMinute = expiresAt && expiresAt * 1000 > Date.now() + 60_000
+  if (expiresInMoreThanOneMinute) return session
+  const response = await authFetch(settings, '/auth/v1/token?grant_type=refresh_token', {
+    method: 'POST',
+    body: JSON.stringify({ refresh_token: session.refresh_token }),
+  })
+  if (!response.ok) {
+    saveSupabaseSession(null)
+    throw new Error(await response.text())
+  }
+  const refreshed = await response.json()
+  saveSupabaseSession(refreshed)
+  return refreshed
+}
+
 export async function testSupabaseConnection(settings) {
-  const response = await supabaseFetch(settings, '/rest/v1/silique_records?select=id&limit=1', {}, loadSupabaseSession())
+  const session = await refreshSupabaseSession(settings)
+  const response = await supabaseFetch(settings, '/rest/v1/silique_records?select=id&limit=1', {}, session)
   if (!response.ok) throw new Error(await response.text())
   return true
 }
 
 export async function fetchCloudSiliqueRecords(settings, session = loadSupabaseSession()) {
+  session = await refreshSupabaseSession(settings, session)
   const query = session?.user?.id
     ? `/rest/v1/silique_records?select=*&user_id=eq.${encodeURIComponent(session.user.id)}&order=created_at.desc`
     : '/rest/v1/silique_records?select=*&order=created_at.desc'
@@ -96,6 +116,7 @@ export async function fetchCloudSiliqueRecords(settings, session = loadSupabaseS
 }
 
 export async function upsertCloudSiliqueRecord(settings, record, session = loadSupabaseSession()) {
+  session = await refreshSupabaseSession(settings, session)
   if (!session?.user?.id) throw new Error('请先登录 Supabase 账号。')
   const cloudRecord = await withCloudImages(settings, { ...record, userId: session.user.id }, session)
   const response = await supabaseFetch(settings, '/rest/v1/silique_records?on_conflict=id', {
@@ -113,12 +134,14 @@ export async function upsertCloudSiliqueRecord(settings, record, session = loadS
 }
 
 export async function upsertCloudSiliqueRecords(settings, records, session = loadSupabaseSession()) {
+  session = await refreshSupabaseSession(settings, session)
   const synced = []
   for (const record of records) synced.push(await upsertCloudSiliqueRecord(settings, record, session))
   return synced
 }
 
 export async function deleteCloudSiliqueRecord(settings, recordId, session = loadSupabaseSession()) {
+  session = await refreshSupabaseSession(settings, session)
   const response = await supabaseFetch(settings, `/rest/v1/silique_records?id=eq.${encodeURIComponent(recordId)}`, {
     method: 'DELETE',
   }, session)

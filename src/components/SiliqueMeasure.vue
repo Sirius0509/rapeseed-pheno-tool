@@ -24,6 +24,7 @@ import {
   fetchCloudSiliqueRecords,
   loadSupabaseSession,
   loadSupabaseSettings,
+  refreshSupabaseSession,
   saveSupabaseSettings,
   signInSupabase,
   signOutSupabase,
@@ -472,7 +473,7 @@ async function startYoloTraining() {
     trainPollTimer = window.setInterval(() => pollYoloTraining(result.job.id), 3000)
   } catch (error) {
     training.value = false
-    trainStatus.value = `训练任务提交失败：${error.message}`
+    trainStatus.value = `训练任务提交失败：${readableError(error)}`
   }
 }
 
@@ -504,7 +505,7 @@ async function startStoredYoloTraining() {
     trainPollTimer = window.setInterval(() => pollYoloTraining(result.job.id), 3000)
   } catch (error) {
     training.value = false
-    trainStatus.value = `后端共享记录训练失败：${error.message}`
+    trainStatus.value = `后端共享记录训练失败：${readableError(error)}`
   }
 }
 
@@ -521,6 +522,7 @@ async function startCloudYoloTraining() {
 
   try {
     localStorage.setItem('rapeseed-pheno-tool:seed-service-url', serviceUrl.value.trim())
+    supabaseSession.value = await refreshSupabaseSession(supabaseSettings, supabaseSession.value)
     const endpoint = `${serviceUrl.value.trim().replace(/\/$/, '')}/api/train-yolo-cloud`
     const response = await fetch(endpoint, {
       method: 'POST',
@@ -543,7 +545,7 @@ async function startCloudYoloTraining() {
     trainPollTimer = window.setInterval(() => pollYoloTraining(result.job.id), 3000)
   } catch (error) {
     training.value = false
-    trainStatus.value = `云端数据训练失败：${error.message}`
+    trainStatus.value = `云端数据训练失败：${readableError(error)}`
   }
 }
 
@@ -552,11 +554,12 @@ async function testCloudSync() {
   cloudStatus.value = '正在测试 Supabase 连接...'
   try {
     await testSupabaseConnection(supabaseSettings)
+    supabaseSession.value = loadSupabaseSession()
     supabaseSettings.enabled = true
     saveSupabaseSettings(supabaseSettings)
     cloudStatus.value = 'Supabase 连接成功，已开启自动云同步。'
   } catch (error) {
-    cloudStatus.value = `Supabase 连接失败：${error.message}`
+    cloudStatus.value = `Supabase 连接失败：${readableError(error)}`
   } finally {
     cloudSyncing.value = false
   }
@@ -572,7 +575,7 @@ async function registerCloudUser() {
     supabaseSettings.enabled = Boolean(supabaseSession.value)
     cloudStatus.value = supabaseSession.value ? '注册成功，已登录并开启云同步。' : '注册成功。若 Supabase 开启了邮箱验证，请先到邮箱确认后再登录。'
   } catch (error) {
-    cloudStatus.value = `注册失败：${error.message}`
+    cloudStatus.value = `注册失败：${readableError(error)}`
   } finally {
     cloudSyncing.value = false
   }
@@ -589,7 +592,7 @@ async function loginCloudUser() {
     cloudStatus.value = `已登录：${currentCloudUser.value}`
     await pullRecordsFromCloud()
   } catch (error) {
-    cloudStatus.value = `登录失败：${error.message}`
+    cloudStatus.value = `登录失败：${readableError(error)}`
   } finally {
     cloudSyncing.value = false
   }
@@ -604,7 +607,7 @@ async function logoutCloudUser() {
     saveSupabaseSettings(supabaseSettings)
     cloudStatus.value = '已退出云端账号。本机 IndexedDB 数据仍保留。'
   } catch (error) {
-    cloudStatus.value = `退出失败：${error.message}`
+    cloudStatus.value = `退出失败：${readableError(error)}`
   } finally {
     cloudSyncing.value = false
   }
@@ -618,12 +621,13 @@ async function pushRecordsToCloud(showMessage = true) {
   }
   cloudSyncing.value = true
   try {
+    supabaseSession.value = await refreshSupabaseSession(supabaseSettings, supabaseSession.value)
     const synced = await upsertCloudSiliqueRecords(supabaseSettings, records.value, supabaseSession.value)
     records.value = mergeRecordLists(records.value, synced)
     await saveSiliqueRecords(records.value)
     if (showMessage) cloudStatus.value = `已同步到 Supabase：${synced.length} 条记录。`
   } catch (error) {
-    cloudStatus.value = `同步到 Supabase 失败：${error.message}`
+    cloudStatus.value = `同步到 Supabase 失败：${readableError(error)}`
   } finally {
     cloudSyncing.value = false
   }
@@ -636,12 +640,13 @@ async function pullRecordsFromCloud() {
   }
   cloudSyncing.value = true
   try {
+    supabaseSession.value = await refreshSupabaseSession(supabaseSettings, supabaseSession.value)
     const cloudRecords = await fetchCloudSiliqueRecords(supabaseSettings, supabaseSession.value)
     records.value = mergeRecordLists(records.value, cloudRecords)
     await saveSiliqueRecords(records.value)
     cloudStatus.value = `已从 Supabase 拉取 ${cloudRecords.length} 条记录，本机当前 ${records.value.length} 条。`
   } catch (error) {
-    cloudStatus.value = `从 Supabase 拉取失败：${error.message}`
+    cloudStatus.value = `从 Supabase 拉取失败：${readableError(error)}`
   } finally {
     cloudSyncing.value = false
   }
@@ -654,13 +659,14 @@ async function syncRecordToCloud(record) {
     return record
   }
   try {
+    supabaseSession.value = await refreshSupabaseSession(supabaseSettings, supabaseSession.value)
     const cloudRecord = await upsertCloudSiliqueRecord(supabaseSettings, record, supabaseSession.value)
     cloudStatus.value = cloudRecord.cloudUploadError
       ? `记录数据已同步到 Supabase，但照片上传失败：${cloudRecord.cloudUploadError}`
       : '记录已同步到 Supabase。'
     return { ...record, ...cloudRecord }
   } catch (error) {
-    cloudStatus.value = `记录已本地保存，但云同步失败：${error.message}`
+    cloudStatus.value = `记录已本地保存，但云同步失败：${readableError(error)}`
     return record
   }
 }
@@ -668,10 +674,11 @@ async function syncRecordToCloud(record) {
 async function deleteRecordFromCloud(recordId) {
   if (!supabaseSettings.enabled || !supabaseSession.value?.user?.id) return
   try {
+    supabaseSession.value = await refreshSupabaseSession(supabaseSettings, supabaseSession.value)
     await deleteCloudSiliqueRecord(supabaseSettings, recordId, supabaseSession.value)
     cloudStatus.value = '云端记录已删除。'
   } catch (error) {
-    cloudStatus.value = `云端删除失败：${error.message}`
+    cloudStatus.value = `云端删除失败：${readableError(error)}`
   }
 }
 
@@ -689,7 +696,7 @@ async function pollYoloTraining(jobId) {
     }
   } catch (error) {
     training.value = false
-    trainStatus.value = `训练状态查询失败：${error.message}`
+    trainStatus.value = `训练状态查询失败：${readableError(error)}`
     clearTrainingPoll()
   }
 }
@@ -707,7 +714,7 @@ async function pullRecordsFromServer() {
     await saveSiliqueRecords(records.value)
     syncStatus.value = `已从电脑后端同步 ${result.records?.length || 0} 条记录，本机当前 ${records.value.length} 条。`
   } catch (error) {
-    syncStatus.value = `从后端同步失败：${error.message}`
+    syncStatus.value = `从后端同步失败：${readableError(error)}`
   } finally {
     syncing.value = false
   }
@@ -730,7 +737,7 @@ async function pushRecordsToServer(showMessage = true) {
     await saveSiliqueRecords(records.value)
     if (showMessage) syncStatus.value = `已同步到电脑后端：${result.count || records.value.length} 条记录。`
   } catch (error) {
-    syncStatus.value = `同步到后端失败：${error.message}`
+    syncStatus.value = `同步到后端失败：${readableError(error)}`
   } finally {
     syncing.value = false
   }
@@ -756,7 +763,7 @@ async function clearServerRecords() {
     if (!response.ok || !result.ok) throw new Error(result.error || `清空失败: ${response.status}`)
     syncStatus.value = '电脑后端共享记录已清空。'
   } catch (error) {
-    syncStatus.value = `清空电脑后端失败：${error.message}`
+    syncStatus.value = `清空电脑后端失败：${readableError(error)}`
   } finally {
     syncing.value = false
   }
@@ -790,6 +797,14 @@ function updateTrainStatus(job) {
   const prefix = statusMap[job.status] || job.status
   const counts = job.trainImages ? `训练 ${job.trainImages} 张，验证 ${job.valImages} 张，标注 ${job.seedAnnotations} 粒。` : ''
   trainStatus.value = `${prefix}：${job.message || ''} ${counts}`.trim()
+}
+
+function readableError(error) {
+  const message = error?.message || String(error)
+  if (message.includes('JWT expired') || message.includes('Invalid Refresh Token') || message.includes('refresh_token')) {
+    return '登录已过期，请退出后重新登录 Supabase。'
+  }
+  return message
 }
 
 function clearTrainingPoll() {
@@ -1030,7 +1045,7 @@ async function saveRecord() {
     resetMeasurements()
     draw()
   } catch (error) {
-    saveStatus.value = `保存失败：${error.message}`
+    saveStatus.value = `保存失败：${readableError(error)}`
   } finally {
     savingRecord.value = false
   }
