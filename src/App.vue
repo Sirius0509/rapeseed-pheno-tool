@@ -7,6 +7,7 @@ import SampleForm from './components/SampleForm.vue'
 import SiliqueMeasure from './components/SiliqueMeasure.vue'
 import { exportSamples } from './utils/exportExcel'
 import { exportPlantTrainingData } from './utils/exportTrainingData'
+import { createId } from './utils/id'
 import { loadSamples, saveSamples } from './utils/storage'
 
 const form = reactive({
@@ -30,7 +31,7 @@ function updateMetrics(value) {
 function saveCurrentSample() {
   if (!canSave.value) return
   const sample = {
-    id: crypto.randomUUID(),
+    id: createId(),
     sampleId: form.sampleId.trim(),
     genotype: form.genotype.trim(),
     treatment: form.treatment.trim(),

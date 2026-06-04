@@ -15,6 +15,7 @@ import {
   Video,
 } from '@lucide/vue'
 import { distance, round } from '../utils/geometry'
+import { createId } from '../utils/id'
 import { exportSiliqueRecords } from '../utils/exportExcel'
 import { exportSiliqueTrainingData, exportSiliqueYoloDataset } from '../utils/exportTrainingData'
 import { deleteSiliqueRecordIndexed, loadSiliqueRecords, loadSiliqueRecordsFull, saveSiliqueRecords } from '../utils/storage'
@@ -1004,7 +1005,7 @@ async function saveRecord() {
   const siliquePhoto = state.confirmedSiliquePhoto
   try {
     const record = {
-      id: crypto.randomUUID(),
+      id: createId(),
       genotype: form.genotype.trim(),
       sampleId: form.sampleId.trim(),
       replicate: form.replicate.trim(),
