@@ -347,42 +347,13 @@ function removeNearestSeed(point) {
 
 function recommendSeedParams() {
   if (!canvas.value || !image.value) return
-  const ctx = canvas.value.getContext('2d', { willReadFrequently: true })
-  const bounds = state.seedRoi
-    ? {
-        x: Math.max(0, Math.floor(state.seedRoi.x)),
-        y: Math.max(0, Math.floor(state.seedRoi.y)),
-        width: Math.max(1, Math.floor(state.seedRoi.width)),
-        height: Math.max(1, Math.floor(state.seedRoi.height)),
-      }
-    : { x: 0, y: 0, width: canvas.value.width, height: canvas.value.height }
-  const img = ctx.getImageData(bounds.x, bounds.y, bounds.width, bounds.height)
-  const brightness = []
-  for (let i = 0; i < img.data.length; i += 4) {
-    const r = img.data[i]
-    const g = img.data[i + 1]
-    const b = img.data[i + 2]
-    brightness.push((r + g + b) / 3)
-  }
-  brightness.sort((a, b) => a - b)
-  if (!brightness.length) return
-  const p10 = percentile(brightness, 0.1)
-  const p20 = percentile(brightness, 0.2)
-  const median = percentile(brightness, 0.5)
   foregroundMode.value = 'dark'
-  let recommended = Math.round(Math.max(45, Math.min(115, Math.min(p20, p10 + 18))))
-  if (median - recommended < 35) recommended = Math.round(Math.max(45, Math.min(115, p10 + 12)))
-  threshold.value = Math.round(Math.max(68, Math.min(78, recommended * 0.35 + 73 * 0.65)))
+  threshold.value = 73
   minSeedArea.value = Math.max(8, minSeedArea.value)
   maxSeedArea.value = Math.max(900, maxSeedArea.value)
   minRoundness.value = Math.min(0.3, Math.max(0.18, minRoundness.value))
   saveDetectParams()
   detectStatus.value = `已推荐参数：籽粒颜色=比背景暗，亮度阈值=${threshold.value}。如仍漏检粘连籽粒，请用“补籽粒”人工加点。`
-}
-
-function percentile(sortedValues, ratio) {
-  const index = Math.max(0, Math.min(sortedValues.length - 1, Math.floor(sortedValues.length * ratio)))
-  return sortedValues[index]
 }
 
 async function autoDetectSeeds() {
