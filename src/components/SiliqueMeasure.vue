@@ -190,10 +190,10 @@ function loadDetectParams() {
     const saved = JSON.parse(localStorage.getItem('rapeseed-pheno-tool:seed-detect-params') || '{}')
     return {
       threshold: Number(saved.threshold) || 73,
-      minSeedArea: Number(saved.minSeedArea) || 18,
-      maxSeedArea: Number(saved.maxSeedArea) || 1400,
+      minSeedArea: Number(saved.minSeedArea) || 8,
+      maxSeedArea: Number(saved.maxSeedArea) || 150,
       minRoundness: Number(saved.minRoundness) || 0.25,
-      minCircularity: Number(saved.minCircularity) || 0.18,
+      minCircularity: Number(saved.minCircularity) || 0.1,
       maxAspect: Number(saved.maxAspect) || 3.2,
       edgeMarginRatio: Number(saved.edgeMarginRatio) || 0.03,
       touchingAreaMultiplier: Number(saved.touchingAreaMultiplier) || 4,
@@ -202,10 +202,10 @@ function loadDetectParams() {
   } catch {
     return {
       threshold: 73,
-      minSeedArea: 18,
-      maxSeedArea: 1400,
+      minSeedArea: 8,
+      maxSeedArea: 150,
       minRoundness: 0.25,
-      minCircularity: 0.18,
+      minCircularity: 0.1,
       maxAspect: 3.2,
       edgeMarginRatio: 0.03,
       touchingAreaMultiplier: 4,
@@ -372,15 +372,15 @@ function recommendSeedParams() {
   if (!canvas.value || !image.value) return
   foregroundMode.value = 'dark'
   threshold.value = 73
-  minSeedArea.value = Math.max(8, minSeedArea.value)
-  maxSeedArea.value = Math.max(900, maxSeedArea.value)
-  minRoundness.value = Math.min(0.3, Math.max(0.18, minRoundness.value))
-  minCircularity.value = 0.18
+  minSeedArea.value = 8
+  maxSeedArea.value = 150
+  minRoundness.value = 0.25
+  minCircularity.value = 0.1
   maxAspect.value = 3.2
   edgeMarginRatio.value = 0.03
   touchingAreaMultiplier.value = 4
   saveDetectParams()
-  detectStatus.value = `已推荐参数：籽粒颜色=比背景暗，亮度阈值=${threshold.value}。如仍漏检粘连籽粒，请用“补籽粒”人工加点。`
+  detectStatus.value = `已推荐参数：籽粒颜色=比背景暗，亮度阈值=${threshold.value}，最小面积=8，最大面积=150，圆度=0.1。请人工增删后确认。`
 }
 
 async function autoDetectSeeds() {
