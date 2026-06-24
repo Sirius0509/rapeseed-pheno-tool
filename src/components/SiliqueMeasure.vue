@@ -83,6 +83,10 @@ const threshold = ref(savedDetectParams.threshold)
 const minSeedArea = ref(savedDetectParams.minSeedArea)
 const maxSeedArea = ref(savedDetectParams.maxSeedArea)
 const minRoundness = ref(savedDetectParams.minRoundness)
+const minCircularity = ref(savedDetectParams.minCircularity)
+const maxAspect = ref(savedDetectParams.maxAspect)
+const edgeMarginRatio = ref(savedDetectParams.edgeMarginRatio)
+const touchingAreaMultiplier = ref(savedDetectParams.touchingAreaMultiplier)
 const foregroundMode = ref(savedDetectParams.foregroundMode)
 const serviceUrl = ref(localStorage.getItem('rapeseed-pheno-tool:seed-service-url') || '')
 const detectStatus = ref('先框选籽粒区域，再生成候选点。')
@@ -112,7 +116,7 @@ const state = reactive({
   previewMask: false,
 })
 
-watch([threshold, minSeedArea, maxSeedArea, minRoundness, foregroundMode], saveDetectParams)
+watch([threshold, minSeedArea, maxSeedArea, minRoundness, minCircularity, maxAspect, edgeMarginRatio, touchingAreaMultiplier, foregroundMode], saveDetectParams)
 watch(supabaseSettings, () => saveSupabaseSettings(supabaseSettings))
 
 onMounted(async () => {
@@ -189,10 +193,24 @@ function loadDetectParams() {
       minSeedArea: Number(saved.minSeedArea) || 18,
       maxSeedArea: Number(saved.maxSeedArea) || 1400,
       minRoundness: Number(saved.minRoundness) || 0.25,
+      minCircularity: Number(saved.minCircularity) || 0.18,
+      maxAspect: Number(saved.maxAspect) || 3.2,
+      edgeMarginRatio: Number(saved.edgeMarginRatio) || 0.03,
+      touchingAreaMultiplier: Number(saved.touchingAreaMultiplier) || 4,
       foregroundMode: ['auto', 'light', 'dark'].includes(saved.foregroundMode) ? saved.foregroundMode : 'dark',
     }
   } catch {
-    return { threshold: 73, minSeedArea: 18, maxSeedArea: 1400, minRoundness: 0.25, foregroundMode: 'dark' }
+    return {
+      threshold: 73,
+      minSeedArea: 18,
+      maxSeedArea: 1400,
+      minRoundness: 0.25,
+      minCircularity: 0.18,
+      maxAspect: 3.2,
+      edgeMarginRatio: 0.03,
+      touchingAreaMultiplier: 4,
+      foregroundMode: 'dark',
+    }
   }
 }
 
@@ -204,6 +222,10 @@ function saveDetectParams() {
       minSeedArea: minSeedArea.value,
       maxSeedArea: maxSeedArea.value,
       minRoundness: minRoundness.value,
+      minCircularity: minCircularity.value,
+      maxAspect: maxAspect.value,
+      edgeMarginRatio: edgeMarginRatio.value,
+      touchingAreaMultiplier: touchingAreaMultiplier.value,
       foregroundMode: foregroundMode.value,
     }),
   )
@@ -353,6 +375,10 @@ function recommendSeedParams() {
   minSeedArea.value = Math.max(8, minSeedArea.value)
   maxSeedArea.value = Math.max(900, maxSeedArea.value)
   minRoundness.value = Math.min(0.3, Math.max(0.18, minRoundness.value))
+  minCircularity.value = 0.18
+  maxAspect.value = 3.2
+  edgeMarginRatio.value = 0.03
+  touchingAreaMultiplier.value = 4
   saveDetectParams()
   detectStatus.value = `已推荐参数：籽粒颜色=比背景暗，亮度阈值=${threshold.value}。如仍漏检粘连籽粒，请用“补籽粒”人工加点。`
 }
@@ -389,9 +415,11 @@ async function detectSeedsWithService() {
       minArea: minSeedArea.value,
       maxArea: maxSeedArea.value,
       minRoundness: minRoundness.value,
-      minCircularity: 0.12,
+      minCircularity: minCircularity.value,
+      maxAspect: maxAspect.value,
+      edgeMarginRatio: edgeMarginRatio.value,
+      touchingAreaMultiplier: touchingAreaMultiplier.value,
       useWatershed: true,
-      edgeMarginRatio: 0.03,
       useYolo: true,
     }),
   })
@@ -836,6 +864,10 @@ function detectSeedsInBrowser() {
       minArea: Math.max(1, minSeedArea.value * areaScale),
       maxArea: Math.max(2, maxSeedArea.value * areaScale),
       minRoundness: minRoundness.value,
+      minCircularity: minCircularity.value,
+      maxAspect: maxAspect.value,
+      edgeMarginRatio: edgeMarginRatio.value,
+      touchingAreaMultiplier: touchingAreaMultiplier.value,
       roi: scaledRoi,
       mode: foregroundMode.value,
     }).map((point) => ({
@@ -849,18 +881,19 @@ function detectSeedsInBrowser() {
     state.seedPoints = normalized
     state.confirmedSeedCount = null
     state.confirmedSeedsPerCm = null
+    const reviewCount = normalized.filter((point) => point.review).length
     detectStatus.value = points.length
-      ? `已生成 ${points.length} 个候选点，请人工增删确认。`
+      ? `已生成 ${points.length} 个候选点${reviewCount ? `，其中 ${reviewCount} 个疑似粘连/异常` : ''}，请人工增删确认。`
       : '没有生成候选点。请调整阈值/面积，或先框选更准确的籽粒区域。'
     draw()
 }
 
-function connectedComponents({ imageData, cutoff, minArea, maxArea, minRoundness, roi, mode }) {
+function connectedComponents({ imageData, cutoff, minArea, maxArea, minRoundness, minCircularity, maxAspect, edgeMarginRatio, touchingAreaMultiplier, roi, mode }) {
   const { data, width, height } = imageData
   const seen = new Uint8Array(width * height)
-  const result = []
+  const components = []
   const stack = []
-  const bounds = roi
+  const rawBounds = roi
     ? {
         minX: Math.max(0, Math.floor(roi.x)),
         minY: Math.max(0, Math.floor(roi.y)),
@@ -868,6 +901,14 @@ function connectedComponents({ imageData, cutoff, minArea, maxArea, minRoundness
         maxY: Math.min(height - 1, Math.ceil(roi.y + roi.height)),
       }
     : { minX: 0, minY: 0, maxX: width - 1, maxY: height - 1 }
+  const marginX = Math.round((rawBounds.maxX - rawBounds.minX + 1) * edgeMarginRatio)
+  const marginY = Math.round((rawBounds.maxY - rawBounds.minY + 1) * edgeMarginRatio)
+  const bounds = {
+    minX: Math.min(rawBounds.maxX, rawBounds.minX + marginX),
+    minY: Math.min(rawBounds.maxY, rawBounds.minY + marginY),
+    maxX: Math.max(rawBounds.minX, rawBounds.maxX - marginX),
+    maxY: Math.max(rawBounds.minY, rawBounds.maxY - marginY),
+  }
 
   for (let y = bounds.minY; y <= bounds.maxY; y += 1) {
     for (let x = bounds.minX; x <= bounds.maxX; x += 1) {
@@ -884,6 +925,7 @@ function connectedComponents({ imageData, cutoff, minArea, maxArea, minRoundness
       let maxX = x
       let minY = y
       let maxY = y
+      let perimeter = 0
       stack.push(idx)
       seen[idx] = 1
       while (stack.length) {
@@ -897,22 +939,34 @@ function connectedComponents({ imageData, cutoff, minArea, maxArea, minRoundness
         maxX = Math.max(maxX, cx)
         minY = Math.min(minY, cy)
         maxY = Math.max(maxY, cy)
-        const neighbors = [
-          current - 1,
-          current + 1,
-          current - width,
-          current + width,
-          current - width - 1,
-          current - width + 1,
-          current + width - 1,
-          current + width + 1,
+        const cardinalNeighbors = [
+          [cx - 1, cy],
+          [cx + 1, cy],
+          [cx, cy - 1],
+          [cx, cy + 1],
         ]
-        for (const next of neighbors) {
-          if (next < 0 || next >= seen.length || seen[next]) continue
-          const nx = next % width
-          const ny = Math.floor(next / width)
-          if (Math.abs(nx - cx) > 1) continue
+        for (const [nx, ny] of cardinalNeighbors) {
+          if (nx < bounds.minX || nx > bounds.maxX || ny < bounds.minY || ny > bounds.maxY) {
+            perimeter += 1
+            continue
+          }
+          const next = ny * width + nx
+          if (!isForeground(data, next, cutoff, mode)) perimeter += 1
+        }
+        const neighbors = [
+          [cx - 1, cy],
+          [cx + 1, cy],
+          [cx, cy - 1],
+          [cx, cy + 1],
+          [cx - 1, cy - 1],
+          [cx + 1, cy - 1],
+          [cx - 1, cy + 1],
+          [cx + 1, cy + 1],
+        ]
+        for (const [nx, ny] of neighbors) {
           if (nx < bounds.minX || nx > bounds.maxX || ny < bounds.minY || ny > bounds.maxY) continue
+          const next = ny * width + nx
+          if (next < 0 || next >= seen.length || seen[next]) continue
           if (!isForeground(data, next, cutoff, mode)) continue
           seen[next] = 1
           stack.push(next)
@@ -923,9 +977,41 @@ function connectedComponents({ imageData, cutoff, minArea, maxArea, minRoundness
       const boxArea = boxWidth * boxHeight
       const roundness = boxArea ? area / boxArea : 0
       const aspect = Math.max(boxWidth, boxHeight) / Math.max(1, Math.min(boxWidth, boxHeight))
-      if (area >= minArea && area <= maxArea && roundness >= minRoundness && aspect <= 3.2) {
-        result.push({ x: sumX / area, y: sumY / area, area })
+      const circularity = perimeter ? (4 * Math.PI * area) / (perimeter * perimeter) : 0
+      if (
+        area >= minArea &&
+        area <= maxArea * touchingAreaMultiplier &&
+        roundness >= minRoundness &&
+        circularity >= minCircularity &&
+        aspect <= maxAspect
+      ) {
+        components.push({ x: sumX / area, y: sumY / area, area, roundness, circularity, aspect })
       }
+    }
+  }
+  const normalAreas = components.filter((item) => item.area <= maxArea).map((item) => item.area).sort((a, b) => a - b)
+  const medianArea = normalAreas.length ? normalAreas[Math.floor(normalAreas.length / 2)] : 0
+  const result = []
+  for (const item of components) {
+    if (!medianArea || item.area <= maxArea) {
+      result.push(item)
+      continue
+    }
+    const estimated = Math.max(1, Math.min(6, Math.round(item.area / medianArea)))
+    if (estimated <= 1) {
+      result.push(item)
+      continue
+    }
+    const radius = Math.max(8, Math.sqrt(item.area / Math.PI) / 3)
+    for (let index = 0; index < estimated; index += 1) {
+      const angle = (2 * Math.PI * index) / estimated
+      result.push({
+        ...item,
+        x: item.x + radius * Math.cos(angle),
+        y: item.y + radius * Math.sin(angle),
+        estimatedSeeds: estimated,
+        review: true,
+      })
     }
   }
   return result
@@ -1064,6 +1150,10 @@ function cleanPoint(point) {
     area: point.area ? round(point.area, 2) : undefined,
     source: point.source || 'manual',
     review: Boolean(point.review),
+    estimatedSeeds: point.estimatedSeeds || undefined,
+    circularity: point.circularity ? round(point.circularity, 3) : undefined,
+    roundness: point.roundness ? round(point.roundness, 3) : undefined,
+    aspect: point.aspect ? round(point.aspect, 3) : undefined,
   }
 }
 
@@ -1184,14 +1274,15 @@ function drawLine(ctx, item, color, label) {
 }
 
 function drawSeed(ctx, point) {
-  ctx.strokeStyle = 'rgba(220, 38, 38, 0.85)'
-  ctx.fillStyle = 'rgba(220, 38, 38, 0.18)'
+  const color = point.review ? '234, 88, 12' : '220, 38, 38'
+  ctx.strokeStyle = `rgba(${color}, 0.9)`
+  ctx.fillStyle = `rgba(${color}, 0.18)`
   ctx.lineWidth = 1.5
   ctx.beginPath()
-  ctx.arc(point.x, point.y, 5, 0, Math.PI * 2)
+  ctx.arc(point.x, point.y, point.review ? 7 : 5, 0, Math.PI * 2)
   ctx.fill()
   ctx.stroke()
-  ctx.fillStyle = 'rgba(220, 38, 38, 0.9)'
+  ctx.fillStyle = `rgba(${color}, 0.95)`
   ctx.beginPath()
   ctx.arc(point.x, point.y, 1.8, 0, Math.PI * 2)
   ctx.fill()
@@ -1477,6 +1568,10 @@ onBeforeUnmount(() => {
         <label class="range-field">最小面积 {{ minSeedArea }}<input v-model.number="minSeedArea" type="range" min="2" max="300" /></label>
         <label class="range-field">最大面积 {{ maxSeedArea }}<input v-model.number="maxSeedArea" type="range" min="100" max="5000" /></label>
         <label class="range-field">圆整度 {{ minRoundness }}<input v-model.number="minRoundness" type="range" min="0.05" max="0.9" step="0.05" /></label>
+        <label class="range-field">圆度 {{ minCircularity }}<input v-model.number="minCircularity" type="range" min="0.05" max="0.9" step="0.05" /></label>
+        <label class="range-field">最大长宽比 {{ maxAspect }}<input v-model.number="maxAspect" type="range" min="1.2" max="6" step="0.1" /></label>
+        <label class="range-field">边缘忽略 {{ Math.round(edgeMarginRatio * 100) }}%<input v-model.number="edgeMarginRatio" type="range" min="0" max="0.15" step="0.01" /></label>
+        <label class="range-field">粘连倍数 {{ touchingAreaMultiplier }}<input v-model.number="touchingAreaMultiplier" type="range" min="1.5" max="6" step="0.5" /></label>
         <div class="button-row compact-row">
           <button type="button" :disabled="!image" @click="recommendSeedParams">
             <Ruler :size="18" />

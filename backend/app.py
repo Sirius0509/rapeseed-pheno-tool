@@ -55,6 +55,8 @@ class SeedCandidateRequest(BaseModel):
     maxArea: float = Field(default=1800, ge=2)
     minCircularity: float = Field(default=0.18, ge=0, le=1)
     minRoundness: float = Field(default=0.12, ge=0, le=1)
+    maxAspect: float = Field(default=3.2, ge=1, le=10)
+    touchingAreaMultiplier: float = Field(default=4.0, ge=1, le=10)
     useWatershed: bool = True
     edgeMarginRatio: float = Field(default=0.03, ge=0, le=0.3)
     useYolo: bool = True
@@ -241,7 +243,9 @@ def contour_candidates(mask: np.ndarray, params: SeedCandidateRequest, offset: t
             continue
         aspect = max(w, h) / max(1, min(w, h))
         roundness = area / max(1, w * h)
-        if circularity < params.minCircularity or roundness < params.minRoundness or aspect > 3.2:
+        if circularity < params.minCircularity or roundness < params.minRoundness or aspect > params.maxAspect:
+            continue
+        if area > params.maxArea * params.touchingAreaMultiplier:
             continue
         moments = cv2.moments(contour)
         if moments["m00"] == 0:
