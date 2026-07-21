@@ -88,6 +88,7 @@ const maxAspect = ref(savedDetectParams.maxAspect)
 const edgeMarginRatio = ref(savedDetectParams.edgeMarginRatio)
 const touchingAreaMultiplier = ref(savedDetectParams.touchingAreaMultiplier)
 const foregroundMode = ref(savedDetectParams.foregroundMode)
+const analysisEngine = ref(savedDetectParams.analysisEngine)
 const serviceUrl = ref(localStorage.getItem('rapeseed-pheno-tool:seed-service-url') || '')
 const detectStatus = ref('先框选籽粒区域，再生成候选点。')
 const detecting = ref(false)
@@ -116,7 +117,7 @@ const state = reactive({
   previewMask: false,
 })
 
-watch([threshold, minSeedArea, maxSeedArea, minRoundness, minCircularity, maxAspect, edgeMarginRatio, touchingAreaMultiplier, foregroundMode], saveDetectParams)
+watch([threshold, minSeedArea, maxSeedArea, minRoundness, minCircularity, maxAspect, edgeMarginRatio, touchingAreaMultiplier, foregroundMode, analysisEngine], saveDetectParams)
 watch(supabaseSettings, () => saveSupabaseSettings(supabaseSettings))
 
 onMounted(async () => {
@@ -198,6 +199,7 @@ function loadDetectParams() {
       edgeMarginRatio: Number(saved.edgeMarginRatio) || 0.03,
       touchingAreaMultiplier: Number(saved.touchingAreaMultiplier) || 4,
       foregroundMode: ['auto', 'light', 'dark'].includes(saved.foregroundMode) ? saved.foregroundMode : 'dark',
+      analysisEngine: ['auto', 'imagej', 'yolo'].includes(saved.analysisEngine) ? saved.analysisEngine : 'auto',
     }
   } catch {
     return {
@@ -210,6 +212,7 @@ function loadDetectParams() {
       edgeMarginRatio: 0.03,
       touchingAreaMultiplier: 4,
       foregroundMode: 'dark',
+      analysisEngine: 'auto',
     }
   }
 }
@@ -227,6 +230,7 @@ function saveDetectParams() {
       edgeMarginRatio: edgeMarginRatio.value,
       touchingAreaMultiplier: touchingAreaMultiplier.value,
       foregroundMode: foregroundMode.value,
+      analysisEngine: analysisEngine.value,
     }),
   )
 }
@@ -409,7 +413,7 @@ async function detectSeedsWithService() {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      imageDataUrl: canvas.value.toDataURL('image/jpeg', 0.9),
+      imageDataUrl: cleanImageDataUrl(),
       roi: state.seedRoi,
       foregroundMode: foregroundMode.value,
       minArea: minSeedArea.value,
@@ -421,6 +425,8 @@ async function detectSeedsWithService() {
       touchingAreaMultiplier: touchingAreaMultiplier.value,
       useWatershed: true,
       useYolo: true,
+      analysisEngine: analysisEngine.value,
+      threshold: threshold.value,
     }),
   })
   if (!response.ok) throw new Error(`Seed service failed: ${response.status}`)
@@ -435,7 +441,9 @@ async function detectSeedsWithService() {
     const confidenceMap = { high: '高', medium: '中', low: '低' }
     const confidence = confidenceMap[result.confidence] || '未知'
     const reviewText = result.reviewCount ? `，疑似粘连/异常 ${result.reviewCount} 处` : ''
-    const engineText = result.engine === 'trained-yolo-seed-detector' ? '训练模型' : '多算法融合'
+    const engineText = result.engine === 'trained-yolo-seed-detector'
+      ? '训练模型'
+      : result.engine === 'imagej-particle-analysis' ? 'ImageJ 粒子分析' : '多算法融合'
     detectStatus.value = `后端${engineText}生成 ${points.length} 个候选点，置信度 ${confidence}${reviewText}。请人工增删后点击确认籽粒数。`
   } else {
     detectStatus.value = '后端识别没有生成候选点。请检查框选区域、拍照质量或参数。'
@@ -449,7 +457,7 @@ function confirmSiliqueLength() {
   state.manualSiliqueLengthMm = metrics.value.siliqueLengthMm
   state.confirmedSiliquePhoto = {
     imageName: imageName.value,
-    imageDataUrl: canvas.value.toDataURL('image/jpeg', 0.9),
+    imageDataUrl: cleanImageDataUrl(),
     imageWidth: canvas.value.width,
     imageHeight: canvas.value.height,
     mmPerPixel: state.mmPerPixel,
@@ -1074,7 +1082,7 @@ async function saveRecord() {
   }
   savingRecord.value = true
   saveStatus.value = '正在保存记录...'
-  const seedImageDataUrl = canvas.value && image.value ? canvas.value.toDataURL('image/jpeg', 0.9) : ''
+  const seedImageDataUrl = canvas.value && image.value ? cleanImageDataUrl() : ''
   const siliquePhoto = state.confirmedSiliquePhoto
   try {
     const record = {
@@ -1244,6 +1252,15 @@ function exportAnnotatedImage() {
   link.download = `${imageName.value || 'silique-annotation'}.png`
   link.href = canvas.value.toDataURL('image/png')
   link.click()
+}
+
+function cleanImageDataUrl() {
+  if (!canvas.value || !image.value) return ''
+  const cleanCanvas = document.createElement('canvas')
+  cleanCanvas.width = canvas.value.width
+  cleanCanvas.height = canvas.value.height
+  cleanCanvas.getContext('2d').drawImage(image.value, 0, 0, cleanCanvas.width, cleanCanvas.height)
+  return cleanCanvas.toDataURL('image/jpeg', 0.92)
 }
 
 function draw() {
@@ -1556,6 +1573,14 @@ onBeforeUnmount(() => {
           </button>
         </div>
         <p class="hint status">{{ syncStatus }}</p>
+        <label class="range-field">
+          识别方法
+          <select v-model="analysisEngine">
+            <option value="auto">自动（训练模型优先）</option>
+            <option value="imagej">ImageJ 粒子分析</option>
+            <option value="yolo">训练模型 / 多算法回退</option>
+          </select>
+        </label>
         <label class="range-field">
           籽粒颜色
           <select v-model="foregroundMode">

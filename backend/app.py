@@ -60,6 +60,8 @@ class SeedCandidateRequest(BaseModel):
     useWatershed: bool = True
     edgeMarginRatio: float = Field(default=0.03, ge=0, le=0.3)
     useYolo: bool = True
+    analysisEngine: Literal["auto", "imagej", "yolo"] = "auto"
+    threshold: int = Field(default=73, ge=0, le=255)
 
 
 class SeedPoint(BaseModel):
@@ -190,6 +192,54 @@ def remove_edge_margin(mask: np.ndarray, ratio: float) -> np.ndarray:
     result = np.zeros_like(mask)
     result[margin_y : h - margin_y, margin_x : w - margin_x] = mask[margin_y : h - margin_y, margin_x : w - margin_x]
     return result
+
+
+def imagej_particle_candidates(
+    img: np.ndarray,
+    params: SeedCandidateRequest,
+    offset: tuple[int, int],
+) -> tuple[list[dict], list[dict], Optional[float]]:
+    """ImageJ-style particle analysis implemented with deployable OpenCV primitives.
+
+    The sequence mirrors the common Fiji workflow: 8-bit conversion, rolling-ball-like
+    background subtraction, thresholding, hole filling, watershed separation and
+    Analyze Particles shape filters.
+    """
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    # Fiji's Color Threshold equivalent is much more stable on the blue boards
+    # used by this project because it rejects white grid lines before watershed.
+    color_mask = (
+        (((hsv[:, :, 0] <= 35) | (hsv[:, :, 0] >= 172)))
+        & (hsv[:, :, 1] >= 40)
+        & (hsv[:, :, 2] <= 245)
+    ).astype(np.uint8) * 255
+    color_fraction = float(np.count_nonzero(color_mask)) / max(1, color_mask.size)
+    if 0.001 <= color_fraction <= 0.25:
+        mask = color_mask
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+    else:
+        mode = params.foregroundMode
+        if mode == "auto":
+            dark_score = float(np.mean(gray <= params.threshold))
+            light_score = float(np.mean(gray >= 255 - params.threshold))
+            mode = "dark" if dark_score <= light_score else "light"
+        threshold_type = cv2.THRESH_BINARY_INV if mode == "dark" else cv2.THRESH_BINARY
+        threshold_value = params.threshold if mode == "dark" else 255 - params.threshold
+        _, mask = cv2.threshold(cv2.medianBlur(gray, 3), threshold_value, 255, threshold_type)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+    flood = mask.copy()
+    flood_mask = np.zeros((mask.shape[0] + 2, mask.shape[1] + 2), np.uint8)
+    cv2.floodFill(flood, flood_mask, (0, 0), 255)
+    mask = cv2.bitwise_or(mask, cv2.bitwise_not(flood))
+
+    points, warnings, median_area = contour_candidates(mask, params, offset)
+    for point in points:
+        point["source"] = "imagej_particle_analysis"
+    return points, warnings, median_area
 
 
 def watershed_labels(mask: np.ndarray) -> np.ndarray:
@@ -576,8 +626,11 @@ def seed_candidates(payload: SeedCandidateRequest):
     x0, y0, x1, y1 = clamp_roi(payload.roi, width, height)
     crop = img[y0:y1, x0:x1]
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-    yolo_points = yolo_seed_candidates(crop, payload, (x0, y0))
-    if yolo_points is not None and yolo_points:
+    yolo_points = yolo_seed_candidates(crop, payload, (x0, y0)) if payload.analysisEngine != "imagej" else None
+    if payload.analysisEngine == "imagej":
+        points, warnings, median_area = imagej_particle_candidates(crop, payload, (x0, y0))
+        engine = "imagej-particle-analysis"
+    elif yolo_points is not None and yolo_points:
         points = yolo_points
         warnings = []
         median_area = None

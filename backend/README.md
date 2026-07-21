@@ -16,6 +16,11 @@ API:
 
 ```text
 POST /api/seed-candidates
+
+Set `analysisEngine` to `imagej` to use the deployable ImageJ-style particle
+analysis pipeline (Color Threshold, Fill Holes, Watershed and Analyze Particles
+shape filters). The default `auto` mode still prefers the latest trained YOLO
+model and falls back to the existing multi-method OpenCV detector.
 GET /api/silique-records
 POST /api/silique-records
 PUT /api/silique-records
