@@ -72,6 +72,16 @@ class SeedPoint(BaseModel):
     review: Optional[bool] = None
 
 
+class ViviparyRequest(BaseModel):
+    imageDataUrl: str
+    roi: Optional[Roi] = None
+    mmPerPixel: Optional[float] = Field(default=None, gt=0)
+    minProtrusionMm: float = Field(default=0.5, ge=0.05, le=20)
+    minSeedArea: float = Field(default=20, ge=2)
+    maxSeedArea: float = Field(default=5000, ge=20)
+    foregroundMode: Literal["auto", "light", "dark"] = "auto"
+
+
 class TrainingRecord(BaseModel):
     id: str
     imageDataUrl: str
@@ -240,6 +250,84 @@ def imagej_particle_candidates(
     for point in points:
         point["source"] = "imagej_particle_analysis"
     return points, warnings, median_area
+
+
+def component_mask_from_background(img: np.ndarray, mode: str) -> np.ndarray:
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB).astype(np.float32)
+    border = np.concatenate((lab[0], lab[-1], lab[:, 0], lab[:, -1]), axis=0)
+    background = np.median(border, axis=0)
+    color_distance = np.linalg.norm(lab - background, axis=2)
+    _, lab_mask = cv2.threshold(np.clip(color_distance, 0, 255).astype(np.uint8), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    border_gray = np.concatenate((gray[0], gray[-1], gray[:, 0], gray[:, -1]))
+    background_gray = float(np.median(border_gray))
+    if mode == "auto":
+        mode = "dark" if float(np.median(gray)) >= background_gray * 0.85 else "light"
+    delta = max(12, float(np.std(border_gray)) * 2.5)
+    intensity_mask = gray < background_gray - delta if mode == "dark" else gray > background_gray + delta
+    border_hsv = np.concatenate((hsv[0], hsv[-1], hsv[:, 0], hsv[:, -1]), axis=0)
+    background_hue = float(np.median(border_hsv[:, 0]))
+    background_saturation = float(np.median(border_hsv[:, 1]))
+    hue_distance = np.abs(hsv[:, :, 0].astype(np.float32) - background_hue)
+    hue_distance = np.minimum(hue_distance, 180 - hue_distance)
+    hue_mask = ((hue_distance >= 18) & (hsv[:, :, 1] >= 35)).astype(np.uint8) * 255
+    if background_saturation >= 45:
+        mask = cv2.bitwise_and(hue_mask, lab_mask)
+    else:
+        mask = cv2.bitwise_and(lab_mask, intensity_mask.astype(np.uint8) * 255)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+
+def vivipary_candidates(img: np.ndarray, payload: ViviparyRequest, offset: tuple[int, int]) -> list[dict]:
+    mask = component_mask_from_background(img, payload.foregroundMode)
+    count, labels, stats, _ = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), 8)
+    ox, oy = offset
+    candidates = []
+    for label_id in range(1, count):
+        area = float(stats[label_id, cv2.CC_STAT_AREA])
+        if area < payload.minSeedArea or area > payload.maxSeedArea:
+            continue
+        component = np.where(labels == label_id, 255, 0).astype(np.uint8)
+        contours, _ = cv2.findContours(component, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        if not contours:
+            continue
+        contour = max(contours, key=cv2.contourArea)
+        distance_map = cv2.distanceTransform((component > 0).astype(np.uint8), cv2.DIST_L2, 5)
+        _, radius, _, center = cv2.minMaxLoc(distance_map)
+        if radius < 1:
+            continue
+        points = contour[:, 0, :].astype(np.float32)
+        center_array = np.array(center, dtype=np.float32)
+        distances = np.linalg.norm(points - center_array, axis=1)
+        farthest_index = int(np.argmax(distances))
+        farthest = points[farthest_index]
+        protrusion_px = max(0.0, float(distances[farthest_index]) - radius * 1.35)
+        protrusion_mm = protrusion_px * payload.mmPerPixel if payload.mmPerPixel else None
+        threshold_px = payload.minProtrusionMm / payload.mmPerPixel if payload.mmPerPixel else radius * 0.35
+        is_vivipary = protrusion_px >= threshold_px
+        x, y, width, height = cv2.boundingRect(contour)
+        aspect = max(width, height) / max(1, min(width, height))
+        perimeter = float(cv2.arcLength(contour, True))
+        circularity = 4 * np.pi * area / (perimeter * perimeter) if perimeter else 0
+        candidates.append({
+            "x": round(float(center[0] + ox), 2),
+            "y": round(float(center[1] + oy), 2),
+            "tipX": round(float(farthest[0] + ox), 2),
+            "tipY": round(float(farthest[1] + oy), 2),
+            "area": round(area, 2),
+            "bodyRadiusPx": round(float(radius), 2),
+            "protrusionLengthPx": round(protrusion_px, 2),
+            "protrusionLengthMm": round(float(protrusion_mm), 3) if protrusion_mm is not None else None,
+            "vivipary": bool(is_vivipary),
+            "aspect": round(float(aspect), 3),
+            "circularity": round(float(circularity), 3),
+            "review": bool(is_vivipary or aspect > 1.8 or circularity < 0.35),
+            "source": "imagej-vivipary-analysis",
+        })
+    return sorted(candidates, key=lambda item: (item["y"], item["x"]))
 
 
 def watershed_labels(mask: np.ndarray) -> np.ndarray:
@@ -653,6 +741,24 @@ def seed_candidates(payload: SeedCandidateRequest):
         "medianArea": round(median_area, 2) if median_area else None,
         "warnings": warnings,
         "reviewCount": review_count,
+        "roi": {"x": x0, "y": y0, "width": x1 - x0, "height": y1 - y0},
+    }
+
+
+@app.post("/api/vivipary-candidates")
+def detect_vivipary(payload: ViviparyRequest):
+    img = decode_data_url(payload.imageDataUrl)
+    height, width = img.shape[:2]
+    x0, y0, x1, y1 = clamp_roi(payload.roi, width, height)
+    points = vivipary_candidates(img[y0:y1, x0:x1], payload, (x0, y0))
+    vivipary_count = sum(1 for point in points if point["vivipary"])
+    return {
+        "engine": "imagej-vivipary-analysis",
+        "count": len(points),
+        "viviparyCount": vivipary_count,
+        "viviparyRate": round(vivipary_count / len(points) * 100, 2) if points else 0,
+        "points": points,
+        "reviewCount": sum(1 for point in points if point["review"]),
         "roi": {"x": x0, "y": y0, "width": x1 - x0, "height": y1 - y0},
     }
 

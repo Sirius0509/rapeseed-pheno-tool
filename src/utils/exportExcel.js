@@ -91,6 +91,38 @@ export function exportSiliqueRecords(records) {
   downloadWorkbook(rows, `rapeseed-silique-${new Date().toISOString().slice(0, 10)}.xlsx`, '角果籽粒数据')
 }
 
+export function exportViviparyRecords(records) {
+  const rows = [
+    ['材料类型', '样品编号', '重复', '照片名称', '总种子数', '胎萌数', '胎萌率_%', '平均突出长度_mm', '最大突出长度_mm', '判定阈值_mm', '备注', '测量日期'],
+    ...records.map((record) => [
+      record.materialType,
+      record.sampleId,
+      record.replicate,
+      record.imageName,
+      record.totalSeeds,
+      record.viviparyCount,
+      record.viviparyRate,
+      record.averageProtrusionMm,
+      record.maxProtrusionMm,
+      record.minProtrusionMm,
+      record.notes,
+      record.measuredAt,
+    ]),
+    [],
+    ['逐粒数据'],
+    ['样品编号', '重复', '粒序号', '是否胎萌', '突出长度_mm', '标注来源'],
+    ...records.flatMap((record) => (record.seedPoints || []).map((point, index) => [
+      record.sampleId,
+      record.replicate,
+      index + 1,
+      point.vivipary ? '是' : '否',
+      point.protrusionLengthMm ?? '',
+      point.source || '',
+    ])),
+  ]
+  downloadWorkbook(rows, `rapeseed-vivipary-${new Date().toISOString().slice(0, 10)}.xlsx`, '胎萌表型')
+}
+
 function createSiliqueSummaryRows(records, includeReplicate) {
   const groups = new Map()
   records.forEach((record) => {

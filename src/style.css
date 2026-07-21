@@ -157,6 +157,56 @@ video {
   align-items: start;
 }
 
+.vivipary-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 16px;
+  align-items: start;
+}
+
+.full-action {
+  width: 100%;
+  margin-top: 14px;
+}
+
+.vivipary-metrics {
+  grid-template-columns: repeat(5, 1fr);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+
+.vivipary-table {
+  min-width: 850px;
+}
+
+.vivipary-details {
+  margin-top: 14px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.vivipary-details summary {
+  cursor: pointer;
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+
+.vivipary-details label {
+  display: grid;
+  grid-template-columns: 72px 1fr 28px;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.vivipary-details input {
+  min-height: 36px;
+}
+
 .measure-area,
 .side-area {
   min-width: 0;
@@ -581,7 +631,8 @@ td {
 
 @media (max-width: 1080px) {
   .workspace,
-  .silique-layout {
+  .silique-layout,
+  .vivipary-layout {
     grid-template-columns: 1fr;
   }
 
@@ -604,6 +655,16 @@ td {
   .tool-strip {
     display: grid;
     grid-template-columns: 1fr 1fr;
+  }
+
+  .vivipary-metrics {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .vivipary-tools {
+    position: sticky;
+    top: 0;
+    z-index: 5;
   }
 
   button,
@@ -641,6 +702,10 @@ td {
     grid-template-columns: 1fr;
   }
 
+  .metric-grid.vivipary-metrics {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
   .metric-grid div {
     border-right: 0;
     border-bottom: 1px solid var(--line);
@@ -661,5 +726,9 @@ td {
   .panel,
   .measure-shell {
     border-radius: 6px;
+  }
+
+  .tool-strip.vivipary-tools {
+    grid-template-columns: 1fr 1fr;
   }
 }

@@ -5,6 +5,7 @@ import ImageMeasure from './components/ImageMeasure.vue'
 import ResultTable from './components/ResultTable.vue'
 import SampleForm from './components/SampleForm.vue'
 import SiliqueMeasure from './components/SiliqueMeasure.vue'
+import ViviparyMeasure from './components/ViviparyMeasure.vue'
 import { exportSamples } from './utils/exportExcel'
 import { exportPlantTrainingData } from './utils/exportTrainingData'
 import { createId } from './utils/id'
@@ -55,7 +56,7 @@ function clearSamples() {
     <header class="app-header">
       <div>
         <h1>油菜表型拍照测量工具</h1>
-        <p>整株表型、角果长度、籽粒计数、拍照记录和 Excel 导出。</p>
+        <p>整株表型、角果籽粒和胎萌表型独立测定。</p>
       </div>
       <div class="header-actions">
         <button
@@ -71,6 +72,13 @@ function clearSamples() {
           @click="activeModule = 'silique'"
         >
           角果/籽粒
+        </button>
+        <button
+          type="button"
+          :class="{ primary: activeModule === 'vivipary' }"
+          @click="activeModule = 'vivipary'"
+        >
+          胎萌测定
         </button>
         <button v-if="activeModule === 'plant'" class="primary" type="button" :disabled="!canSave" @click="saveCurrentSample">
           <Save :size="18" />
@@ -113,6 +121,7 @@ function clearSamples() {
       <ResultTable :samples="samples" @clear="clearSamples" />
     </template>
 
-    <SiliqueMeasure v-else />
+    <SiliqueMeasure v-else-if="activeModule === 'silique'" />
+    <ViviparyMeasure v-else />
   </main>
 </template>
