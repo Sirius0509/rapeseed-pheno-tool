@@ -20,6 +20,7 @@ const records = ref(loadViviparyRecords())
 const serviceUrl = ref(localStorage.getItem('rapeseed-pheno-tool:seed-service-url') || '')
 const scaleLengthMm = ref(10)
 const minProtrusionMm = ref(0.5)
+const expectedSeedDiameterMm = ref(2.0)
 const state = reactive({ scale: null, mmPerPixel: null, roi: null, seedPoints: [] })
 const form = reactive({ materialType: '', sampleId: '', replicate: '1', notes: '' })
 
@@ -189,6 +190,7 @@ async function autoDetect() {
         roi: fullResolutionRoi(),
         mmPerPixel: fullResolutionMmPerPixel(),
         minProtrusionMm: minProtrusionMm.value,
+        expectedSeedDiameterMm: expectedSeedDiameterMm.value,
         foregroundMode: 'auto',
       }),
     })
@@ -271,7 +273,7 @@ async function saveRecord() {
   const record = {
     id: createId(), materialType: form.materialType.trim(), sampleId: form.sampleId.trim(), replicate: form.replicate,
     notes: form.notes.trim(), imageName: imageName.value, imageDataUrl: cleanImageDataUrl(true), mmPerPixel: fullResolutionMmPerPixel(),
-    scale: fullResolutionScale(), roi: fullResolutionRoi(), minProtrusionMm: Number(minProtrusionMm.value), seedPoints: state.seedPoints.map(pointToFullResolution),
+    scale: fullResolutionScale(), roi: fullResolutionRoi(), minProtrusionMm: Number(minProtrusionMm.value), expectedSeedDiameterMm: Number(expectedSeedDiameterMm.value), seedPoints: state.seedPoints.map(pointToFullResolution),
     ...metrics.value, measuredAt: new Date().toISOString().slice(0, 10), createdAt: new Date().toISOString(),
   }
   records.value = [record, ...records.value]
@@ -296,10 +298,14 @@ function draw() {
   }
   state.seedPoints.forEach((seed, index) => {
     const color = seed.vivipary ? '#ea580c' : seed.source === 'dense-seed-estimate' ? '#ca8a04' : '#15803d'
+    if (seed.source === 'dense-seed-estimate') {
+      ctx.fillStyle = color; ctx.beginPath(); ctx.arc(seed.x, seed.y, 3.5, 0, Math.PI * 2); ctx.fill()
+      return
+    }
     ctx.strokeStyle = color; ctx.lineWidth = 2
     ctx.beginPath(); ctx.arc(seed.x, seed.y, 9, 0, Math.PI * 2); ctx.stroke()
     if (seed.vivipary && Number.isFinite(seed.tipX)) { ctx.beginPath(); ctx.moveTo(seed.x, seed.y); ctx.lineTo(seed.tipX, seed.tipY); ctx.stroke() }
-    ctx.fillStyle = color; ctx.font = '12px sans-serif'; ctx.fillText(String(index + 1), seed.x + 11, seed.y - 8)
+    if (state.seedPoints.length <= 80) { ctx.fillStyle = color; ctx.font = '12px sans-serif'; ctx.fillText(String(index + 1), seed.x + 11, seed.y - 8) }
   })
   pending.value.forEach((point) => { ctx.fillStyle = '#111827'; ctx.beginPath(); ctx.arc(point.x, point.y, 4, 0, Math.PI * 2); ctx.fill() })
 }
@@ -354,6 +360,7 @@ function drawLine(ctx, points, color) {
           <label>重复<select v-model="form.replicate"><option v-for="n in 9" :key="n" :value="String(n)">{{ n }}</option></select></label>
           <label>标尺长度 mm<input v-model.number="scaleLengthMm" type="number" min="0.1" step="0.1" /></label>
           <label class="wide">胎萌阈值 mm<input v-model.number="minProtrusionMm" type="number" min="0.05" max="20" step="0.05" /></label>
+          <label class="wide">预计种子直径 mm<input v-model.number="expectedSeedDiameterMm" type="number" min="0.5" max="10" step="0.1" /></label>
           <label class="wide">备注<textarea v-model="form.notes" rows="2"></textarea></label>
         </div>
         <button class="primary full-action" type="button" :disabled="!canSave" @click="saveRecord"><Save :size="18" />保存胎萌记录</button>

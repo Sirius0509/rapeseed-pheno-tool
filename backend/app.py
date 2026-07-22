@@ -77,6 +77,7 @@ class ViviparyRequest(BaseModel):
     roi: Optional[Roi] = None
     mmPerPixel: Optional[float] = Field(default=None, gt=0)
     minProtrusionMm: float = Field(default=0.5, ge=0.05, le=20)
+    expectedSeedDiameterMm: float = Field(default=2.0, ge=0.5, le=10)
     minSeedArea: float = Field(default=20, ge=2)
     maxSeedArea: float = Field(default=5000, ge=20)
     foregroundMode: Literal["auto", "light", "dark"] = "auto"
@@ -284,7 +285,7 @@ def component_mask_from_background(img: np.ndarray, mode: str) -> np.ndarray:
     return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
 
-def dense_seed_peaks(mask: np.ndarray) -> tuple[list[tuple[float, float, float]], np.ndarray]:
+def dense_seed_peaks(mask: np.ndarray, expected_radius_px: Optional[float] = None) -> tuple[list[tuple[float, float, float]], np.ndarray]:
     binary = (mask > 0).astype(np.uint8)
     distance_map = cv2.distanceTransform(binary, cv2.DIST_L2, 5)
     preliminary = ((distance_map == cv2.dilate(distance_map, np.ones((3, 3), np.uint8))) & (distance_map >= 1.5)).astype(np.uint8)
@@ -295,12 +296,15 @@ def dense_seed_peaks(mask: np.ndarray) -> tuple[list[tuple[float, float, float]]
             continue
         x, y = centroids[index]
         radii.append(float(distance_map[min(distance_map.shape[0] - 1, int(round(y))), min(distance_map.shape[1] - 1, int(round(x)))]))
-    expected_radius = float(np.median(radii)) if radii else 3.0
-    expected_radius = min(20.0, max(2.0, expected_radius))
+    if expected_radius_px is not None:
+        expected_radius = min(60.0, max(2.0, float(expected_radius_px)))
+    else:
+        expected_radius = float(np.median(radii)) if radii else 3.0
+        expected_radius = min(20.0, max(2.0, expected_radius))
     kernel_size = int(round(expected_radius * 2))
     if kernel_size % 2 == 0:
         kernel_size += 1
-    kernel_size = min(41, max(5, kernel_size))
+    kernel_size = min(121, max(5, kernel_size))
     local_max = cv2.dilate(distance_map, np.ones((kernel_size, kernel_size), np.uint8))
     peaks = ((distance_map == local_max) & (distance_map >= max(1.5, expected_radius * 0.35))).astype(np.uint8)
     peak_count, _, peak_stats, peak_centroids = cv2.connectedComponentsWithStats(peaks, 8)
@@ -319,7 +323,8 @@ def vivipary_candidates(img: np.ndarray, payload: ViviparyRequest, offset: tuple
     count, labels, stats, _ = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), 8)
     ox, oy = offset
     candidates = []
-    peaks, _ = dense_seed_peaks(mask)
+    expected_radius_px = payload.expectedSeedDiameterMm / (2 * payload.mmPerPixel) if payload.mmPerPixel else None
+    peaks, _ = dense_seed_peaks(mask, expected_radius_px)
     peaks_by_label: dict[int, list[tuple[float, float, float]]] = {}
     for peak in peaks:
         px, py, _ = peak
