@@ -264,7 +264,9 @@ def component_mask_from_background(img: np.ndarray, mode: str) -> np.ndarray:
     background_gray = float(np.median(border_gray))
     if mode == "auto":
         mode = "dark" if float(np.median(gray)) >= background_gray * 0.85 else "light"
-    delta = max(12, float(np.std(border_gray)) * 2.5)
+    median_border = float(np.median(border_gray))
+    mad = float(np.median(np.abs(border_gray.astype(np.float32) - median_border)))
+    delta = min(40, max(15, mad * 3.0))
     intensity_mask = gray < background_gray - delta if mode == "dark" else gray > background_gray + delta
     border_hsv = np.concatenate((hsv[0], hsv[-1], hsv[:, 0], hsv[:, -1]), axis=0)
     background_hue = float(np.median(border_hsv[:, 0]))
@@ -273,7 +275,8 @@ def component_mask_from_background(img: np.ndarray, mode: str) -> np.ndarray:
     hue_distance = np.minimum(hue_distance, 180 - hue_distance)
     hue_mask = ((hue_distance >= 18) & (hsv[:, :, 1] >= 35)).astype(np.uint8) * 255
     if background_saturation >= 45:
-        mask = cv2.bitwise_and(hue_mask, lab_mask)
+        # Black rapeseed has low saturation and may be missed by hue alone.
+        mask = cv2.bitwise_or(cv2.bitwise_and(hue_mask, lab_mask), intensity_mask.astype(np.uint8) * 255)
     else:
         mask = cv2.bitwise_and(lab_mask, intensity_mask.astype(np.uint8) * 255)
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
@@ -281,14 +284,63 @@ def component_mask_from_background(img: np.ndarray, mode: str) -> np.ndarray:
     return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
 
+def dense_seed_peaks(mask: np.ndarray) -> tuple[list[tuple[float, float, float]], np.ndarray]:
+    binary = (mask > 0).astype(np.uint8)
+    distance_map = cv2.distanceTransform(binary, cv2.DIST_L2, 5)
+    preliminary = ((distance_map == cv2.dilate(distance_map, np.ones((3, 3), np.uint8))) & (distance_map >= 1.5)).astype(np.uint8)
+    count, _, stats, centroids = cv2.connectedComponentsWithStats(preliminary, 8)
+    radii = []
+    for index in range(1, count):
+        if stats[index, cv2.CC_STAT_AREA] > 30:
+            continue
+        x, y = centroids[index]
+        radii.append(float(distance_map[min(distance_map.shape[0] - 1, int(round(y))), min(distance_map.shape[1] - 1, int(round(x)))]))
+    expected_radius = float(np.median(radii)) if radii else 3.0
+    expected_radius = min(20.0, max(2.0, expected_radius))
+    kernel_size = int(round(expected_radius * 2))
+    if kernel_size % 2 == 0:
+        kernel_size += 1
+    kernel_size = min(41, max(5, kernel_size))
+    local_max = cv2.dilate(distance_map, np.ones((kernel_size, kernel_size), np.uint8))
+    peaks = ((distance_map == local_max) & (distance_map >= max(1.5, expected_radius * 0.35))).astype(np.uint8)
+    peak_count, _, peak_stats, peak_centroids = cv2.connectedComponentsWithStats(peaks, 8)
+    result = []
+    for index in range(1, peak_count):
+        if peak_stats[index, cv2.CC_STAT_AREA] > max(30, kernel_size * kernel_size):
+            continue
+        x, y = peak_centroids[index]
+        radius = float(distance_map[min(distance_map.shape[0] - 1, int(round(y))), min(distance_map.shape[1] - 1, int(round(x)))])
+        result.append((float(x), float(y), radius))
+    return result, distance_map
+
+
 def vivipary_candidates(img: np.ndarray, payload: ViviparyRequest, offset: tuple[int, int]) -> list[dict]:
     mask = component_mask_from_background(img, payload.foregroundMode)
     count, labels, stats, _ = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), 8)
     ox, oy = offset
     candidates = []
-    for label_id in range(1, count):
+    peaks, _ = dense_seed_peaks(mask)
+    peaks_by_label: dict[int, list[tuple[float, float, float]]] = {}
+    for peak in peaks:
+        px, py, _ = peak
+        label_id = int(labels[min(labels.shape[0] - 1, int(round(py))), min(labels.shape[1] - 1, int(round(px)))])
+        if label_id > 0:
+            peaks_by_label.setdefault(label_id, []).append(peak)
+
+    for label_id, component_peaks in peaks_by_label.items():
         area = float(stats[label_id, cv2.CC_STAT_AREA])
-        if area < payload.minSeedArea or area > payload.maxSeedArea:
+        estimated_area = area / max(1, len(component_peaks))
+        if estimated_area < payload.minSeedArea:
+            continue
+        if len(component_peaks) > 1 or area > payload.maxSeedArea:
+            for center_x, center_y, radius in component_peaks:
+                candidates.append({
+                    "x": round(center_x + ox, 2), "y": round(center_y + oy, 2),
+                    "tipX": None, "tipY": None, "area": round(estimated_area, 2),
+                    "bodyRadiusPx": round(radius, 2), "protrusionLengthPx": None,
+                    "protrusionLengthMm": None, "vivipary": False, "aspect": None,
+                    "circularity": None, "review": True, "source": "dense-seed-estimate",
+                })
             continue
         component = np.where(labels == label_id, 255, 0).astype(np.uint8)
         contours, _ = cv2.findContours(component, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
@@ -752,6 +804,7 @@ def detect_vivipary(payload: ViviparyRequest):
     x0, y0, x1, y1 = clamp_roi(payload.roi, width, height)
     points = vivipary_candidates(img[y0:y1, x0:x1], payload, (x0, y0))
     vivipary_count = sum(1 for point in points if point["vivipary"])
+    dense_count = sum(1 for point in points if point.get("source") == "dense-seed-estimate")
     return {
         "engine": "imagej-vivipary-analysis",
         "count": len(points),
@@ -759,6 +812,8 @@ def detect_vivipary(payload: ViviparyRequest):
         "viviparyRate": round(vivipary_count / len(points) * 100, 2) if points else 0,
         "points": points,
         "reviewCount": sum(1 for point in points if point["review"]),
+        "denseEstimateCount": dense_count,
+        "warnings": (["检测到密集或粘连种子；总数为中心峰估算值，遮挡区域不能可靠判断胎萌。"] if dense_count else []),
         "roi": {"x": x0, "y": y0, "width": x1 - x0, "height": y1 - y0},
     }
 

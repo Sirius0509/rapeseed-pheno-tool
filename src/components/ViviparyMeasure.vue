@@ -184,12 +184,19 @@ async function autoDetect() {
   try {
     const response = await fetch(`${serviceUrl.value.trim().replace(/\/$/, '')}/api/vivipary-candidates`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ imageDataUrl: cleanImageDataUrl(), roi: state.roi, mmPerPixel: state.mmPerPixel, minProtrusionMm: minProtrusionMm.value, foregroundMode: 'auto' }),
+      body: JSON.stringify({
+        imageDataUrl: cleanImageDataUrl(true),
+        roi: fullResolutionRoi(),
+        mmPerPixel: fullResolutionMmPerPixel(),
+        minProtrusionMm: minProtrusionMm.value,
+        foregroundMode: 'auto',
+      }),
     })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     const result = await response.json()
-    state.seedPoints = result.points || []
-    status.value = `识别到 ${result.count} 粒，其中疑似胎萌 ${result.viviparyCount} 粒。点击标记可切换结果。`
+    state.seedPoints = (result.points || []).map(pointFromFullResolution)
+    const warning = result.warnings?.length ? ` ${result.warnings.join(' ')}` : ''
+    status.value = `识别到 ${result.count} 粒，其中疑似胎萌 ${result.viviparyCount} 粒。${warning} 点击标记可切换结果。`
     draw()
   } catch (error) {
     status.value = `胎萌检测失败：${error.message}`
@@ -198,10 +205,63 @@ async function autoDetect() {
   }
 }
 
-function cleanImageDataUrl() {
+function imageScale() {
+  return {
+    x: (image.value?.naturalWidth || canvas.value.width) / canvas.value.width,
+    y: (image.value?.naturalHeight || canvas.value.height) / canvas.value.height,
+  }
+}
+
+function fullResolutionRoi() {
+  if (!state.roi) return null
+  const scale = imageScale()
+  return { x: state.roi.x * scale.x, y: state.roi.y * scale.y, width: state.roi.width * scale.x, height: state.roi.height * scale.y }
+}
+
+function fullResolutionMmPerPixel() {
+  return state.mmPerPixel / imageScale().x
+}
+
+function pointFromFullResolution(point) {
+  const scale = imageScale()
+  return {
+    ...point,
+    x: point.x / scale.x,
+    y: point.y / scale.y,
+    tipX: Number.isFinite(point.tipX) ? point.tipX / scale.x : null,
+    tipY: Number.isFinite(point.tipY) ? point.tipY / scale.y : null,
+    bodyRadiusPx: Number.isFinite(point.bodyRadiusPx) ? point.bodyRadiusPx / scale.x : point.bodyRadiusPx,
+    protrusionLengthPx: Number.isFinite(point.protrusionLengthPx) ? point.protrusionLengthPx / scale.x : point.protrusionLengthPx,
+  }
+}
+
+function pointToFullResolution(point) {
+  const scale = imageScale()
+  return {
+    ...point,
+    x: point.x * scale.x,
+    y: point.y * scale.y,
+    tipX: Number.isFinite(point.tipX) ? point.tipX * scale.x : null,
+    tipY: Number.isFinite(point.tipY) ? point.tipY * scale.y : null,
+    bodyRadiusPx: Number.isFinite(point.bodyRadiusPx) ? point.bodyRadiusPx * scale.x : point.bodyRadiusPx,
+    protrusionLengthPx: Number.isFinite(point.protrusionLengthPx) ? point.protrusionLengthPx * scale.x : point.protrusionLengthPx,
+  }
+}
+
+function fullResolutionScale() {
+  if (!state.scale) return null
+  const scale = imageScale()
+  return {
+    ...state.scale,
+    pixels: state.scale.pixels * scale.x,
+    points: state.scale.points.map((point) => ({ x: point.x * scale.x, y: point.y * scale.y })),
+  }
+}
+
+function cleanImageDataUrl(fullResolution = false) {
   const clean = document.createElement('canvas')
-  clean.width = canvas.value.width
-  clean.height = canvas.value.height
+  clean.width = fullResolution ? image.value.naturalWidth : canvas.value.width
+  clean.height = fullResolution ? image.value.naturalHeight : canvas.value.height
   clean.getContext('2d').drawImage(image.value, 0, 0, clean.width, clean.height)
   return clean.toDataURL('image/jpeg', 0.92)
 }
@@ -210,8 +270,8 @@ async function saveRecord() {
   if (!canSave.value) return
   const record = {
     id: createId(), materialType: form.materialType.trim(), sampleId: form.sampleId.trim(), replicate: form.replicate,
-    notes: form.notes.trim(), imageName: imageName.value, imageDataUrl: cleanImageDataUrl(), mmPerPixel: state.mmPerPixel,
-    scale: state.scale, roi: state.roi, minProtrusionMm: Number(minProtrusionMm.value), seedPoints: state.seedPoints.map((point) => ({ ...point })),
+    notes: form.notes.trim(), imageName: imageName.value, imageDataUrl: cleanImageDataUrl(true), mmPerPixel: fullResolutionMmPerPixel(),
+    scale: fullResolutionScale(), roi: fullResolutionRoi(), minProtrusionMm: Number(minProtrusionMm.value), seedPoints: state.seedPoints.map(pointToFullResolution),
     ...metrics.value, measuredAt: new Date().toISOString().slice(0, 10), createdAt: new Date().toISOString(),
   }
   records.value = [record, ...records.value]
@@ -235,7 +295,7 @@ function draw() {
     ctx.strokeStyle = '#7c3aed'; ctx.lineWidth = 2; ctx.setLineDash([8, 6]); ctx.strokeRect(state.roi.x, state.roi.y, state.roi.width, state.roi.height); ctx.setLineDash([])
   }
   state.seedPoints.forEach((seed, index) => {
-    const color = seed.vivipary ? '#ea580c' : '#15803d'
+    const color = seed.vivipary ? '#ea580c' : seed.source === 'dense-seed-estimate' ? '#ca8a04' : '#15803d'
     ctx.strokeStyle = color; ctx.lineWidth = 2
     ctx.beginPath(); ctx.arc(seed.x, seed.y, 9, 0, Math.PI * 2); ctx.stroke()
     if (seed.vivipary && Number.isFinite(seed.tipX)) { ctx.beginPath(); ctx.moveTo(seed.x, seed.y); ctx.lineTo(seed.tipX, seed.tipY); ctx.stroke() }
@@ -301,7 +361,7 @@ function drawLine(ctx, points, color) {
       <section class="panel">
         <div class="panel-title">识别设置</div>
         <label class="range-field">识别服务地址<input v-model="serviceUrl" placeholder="http://127.0.0.1:8000" /></label>
-        <p class="hint">橙色表示疑似胎萌，绿色表示正常。点击“切换胎萌”后再点标记即可人工纠正。</p>
+        <p class="hint">橙色表示疑似胎萌，绿色表示轮廓清楚的正常种子，黄色表示密集区估算点。点击“切换胎萌”后再点标记即可人工纠正。</p>
         <details v-if="metrics.viviparyCount" class="vivipary-details">
           <summary>胎萌粒突出长度（{{ metrics.viviparyCount }} 粒）</summary>
           <label v-for="(seed, index) in state.seedPoints" v-show="seed.vivipary" :key="`${index}-${seed.x}-${seed.y}`">
